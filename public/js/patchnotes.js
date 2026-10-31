@@ -2,6 +2,12 @@
 // When you ship something players will notice, add a line to the top entry (or start a new one).
 const PATCH_NOTES = [
   {
+    version: '1.2.1', date: '2026-11-01', title: 'Easy checkpoints',
+    items: [
+      'Easy games: when everyone goes down, you start again from the furthest checkpoint your team reached on that level, not from the start of the level',
+    ],
+  },
+  {
     version: '1.2', date: '2026-10-31', title: 'Chained',
     items: [
       'New ⚔ Versus option (Multiplayer, every mode): teams against each other. Make teams in the lobby (up to 5 kitties each), give yours a name and press READY when you are set; JOIN asks to join another team and someone in it accepts. It works with Chained too (then every team needs at least two kitties)',

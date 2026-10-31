@@ -3,7 +3,7 @@
 // Exit code 1 if any check fails.
 import { createSim, stepSim } from '../public/js/shared/sim.js';
 import { CFG, SKATE_FINAL_LEVEL, FINAL_MODES, PLAYER_NAMES, stageStep } from '../public/js/shared/config.js';
-import { generateLevel, mazeSelfTest, collideCircle, onIce } from '../public/js/shared/maze.js';
+import { generateLevel, mazeSelfTest, collideCircle, onIce, pathProgress } from '../public/js/shared/maze.js';
 import { hyp } from '../public/js/shared/rng.js';
 import { filterChat, filterName } from '../public/js/shared/filter.js';
 import { isUnlocked, featTotal, medicLook, slotMetal, UNLOCKS } from '../public/js/shared/unlocks.js';
@@ -229,6 +229,30 @@ const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process
     ok(wiped && started && started.retry && Math.abs(ticks * CFG.TICK - CFG.RETRY_TIME) < 0.1 && easy.level === 3 && easy.retries === 1 && easy.state === 'playing'
       && easy.players.every((p) => p.alive) && easy.players[0].finishes === 2 && easy.players[0].rescues === 5 && easy.enemyTicks === 0 && same,
     'easy game: everyone down starts the level over (kitties up at the start, crowns and rescues kept, wolves as at the level start)');
+  }
+
+  // easy games: everyone down after reaching checkpoints = the level again from the furthest one reached (all of them
+  // still reached), not from its start
+  {
+    let s = null;
+    for (let lvl = 2; lvl <= 8 && !s; lvl++) {
+      const t = createSim({ seed: 11, players: [{ id: 1, name: 'a' }, { id: 2, name: 'b' }], startLevel: lvl, mode: 'run', easy: true });
+      stepSim(t, {}, CFG.TICK);
+      if ((t.levelData.checkpoints || []).filter((c) => !c.medic).length >= 2) s = t;
+    }
+    const cps = s.levelData.checkpoints, idx = cps.map((c, i) => i).filter((i) => !cps[i].medic);
+    const far = (i) => pathProgress(s.levelData, cps[i].x, cps[i].z);
+    const [nearI, farI] = [idx[0], idx[1]].sort((a, b) => far(a) - far(b));
+    for (const ci of [farI, nearI]) {   // (the further one reached first, then the nearer: still from the further)
+      const p = s.players[0]; p.invuln = 99; p.x = cps[ci].x; p.z = cps[ci].z; p.waitRelease = false; stepSim(s, {}, CFG.TICK);
+    }
+    for (const p of s.players) { p.invuln = 0; p.alive = false; }
+    let started = null;
+    for (let i = 0; i < 600 && !started; i++) started = stepSim(s, {}, CFG.TICK).find((x) => x.type === 'levelStart') || null;
+    const half = (s.levelData.safeSize || s.levelData.corridorWidth) / 2;
+    ok(started && started.retry && started.cp === farI && s.checkpointsHit.includes(nearI) && s.checkpointsHit.includes(farI)
+      && s.players.every((p) => p.alive && Math.abs(p.x - cps[farI].x) < half && Math.abs(p.z - cps[farI].z) < half),
+    'easy game: everyone down starts the level again from the furthest checkpoint reached (every one reached stays reached)');
   }
 
   // easy Run + Skate, level 9: any kitty repairs the broken checkpoint (no revives needed), and from then on everyone

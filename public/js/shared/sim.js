@@ -695,14 +695,17 @@ function movePlayer(sim, p, inp, dt) {
 // keep their crowns and rescues)
 // A repaired (medic) checkpoint is kept (Run + Skate's level 9: the run half's start): everyone starts again there,
 // the checkpoint still repaired (the event's cp: its index).
+// an easy game, everyone down: the level again, from the furthest checkpoint reached on it (the ones reached stay
+// reached), or from its start
 function retryLevel(sim, events) {
-  const cps = sim.levelData.checkpoints || [];
-  const at = sim.checkpointsHit.find((c) => cps[c] && cps[c].medic);
+  const ld = sim.levelData, cps = ld.checkpoints || [], hit = sim.checkpointsHit.filter((c) => cps[c]);
+  const far = (c) => pathProgress(ld, cps[c].x, cps[c].z);
+  const at = hit.length ? hit.reduce((a, c) => (far(c) > far(a) ? c : a)) : undefined;
   sim.retries = (sim.retries | 0) + 1;
   makeLevel(sim, sim.level);
   if (at === undefined) for (let i = 0; i < sim.players.length; i++) placeAtSpawn(sim, sim.players[i], i);
   else {
-    sim.checkpointsHit.push(at);
+    sim.checkpointsHit.push(...hit);
     for (let i = 0; i < sim.players.length; i++) {
       placeAtSpawn(sim, sim.players[i], i);   // (up again, safe for a moment)
       const p = sim.players[i], sp = squareSlot(cps[at].x, cps[at].z, cps[at].heading, i);
@@ -710,7 +713,7 @@ function retryLevel(sim, events) {
       holdUntilRelease(sim, p);
     }
   }
-  events.push({ type: 'levelStart', level: sim.level, retry: true, ...(at === undefined ? {} : { cp: at }) });
+  events.push({ type: 'levelStart', level: sim.level, retry: true, ...(at === undefined ? {} : { cp: at, hit }) });   // (hit: every checkpoint still reached)
 }
 
 function nextLevel(sim, events) {

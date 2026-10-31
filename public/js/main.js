@@ -847,10 +847,13 @@ function handleEvents(events) {
         buildView();
         ensureKitties();
         for (const k of kitties.values()) k.paws.clear(); // prints belong to the old map
-        // an easy game starting over from its repaired checkpoint (Run + Skate's level 9): it is still repaired
+        // an easy game starting over from its furthest checkpoint: the ones reached stay reached (a broken one repaired)
         if (ev.retry && ev.cp != null) {
-          if (!sim.checkpointsHit.includes(ev.cp)) sim.checkpointsHit.push(ev.cp);
-          if (view && view.world.repairCheckpoint) view.world.repairCheckpoint(ev.cp);
+          const cps = sim.levelData.checkpoints || [];
+          for (const c of ev.hit || [ev.cp]) {
+            if (!sim.checkpointsHit.includes(c)) sim.checkpointsHit.push(c);
+            if (cps[c] && cps[c].medic && view && view.world.repairCheckpoint) view.world.repairCheckpoint(c);
+          }
         }
         for (const p of sim.players) effects.teleport(p.x, p.z, p.color);
         const finale = !!sim.levelData.finale;
@@ -858,7 +861,7 @@ function handleEvents(events) {
         // hell: its first level opens like level 9, every next one is a new hell (easy hell: a level starting over)
         const hellNext = sim.hell && sim.level > 1;
         // (an easy game's retry: just the level and 'Once more!', no WELCOME TO HELL again)
-        if (ev.retry) ui.banner(sim.hell ? `HELL ${sim.level}` : `LEVEL ${L}${night ? ' · NIGHT' : ''}`, 'Once more!', 2200, finale ? 'finale' : undefined);
+        if (ev.retry) ui.banner(sim.hell ? `HELL ${sim.level}` : `LEVEL ${L}${night ? ' · NIGHT' : ''}`, ev.cp != null ? 'Once more, from your last checkpoint!' : 'Once more!', 2200, finale ? 'finale' : undefined);
         else if (hellNext) ui.banner(`HELL ${sim.level}`, sim.level >= HELL_LEVELS ? 'The last one!' : 'A new hell…', 2600, 'finale');
         else if (finale) ui.banner('WELCOME TO HELL', 'Think you can escape?', 4200, 'finale');
         // (the swag menu shows level 9's unlocks from now on; not from someone's hell lobby: that doesn't open hell here)
@@ -945,7 +948,7 @@ function handleEvents(events) {
           const medicat = !!by && (by.rescues || 0) >= 60;
           ui.banner(medicat ? 'MEDICAT TO THE RESCUE!!!' : 'CHECKPOINT FIXED!', ev.revived.length ? `${by ? by.name : 'A kitty'} fixed the checkpoint: everyone is back on their paws` : `${by ? by.name : 'A kitty'} fixed the checkpoint`, 2600);
           if (view && view.world.repairCheckpoint) view.world.repairCheckpoint(ev.index);
-        } else ui.banner('CHECKPOINT!', ev.revived.length ? 'Everyone is back on their paws' : (by && sim.players.length > 1 ? `${by.name} gathered the team` : 'Keep going!'), 1600);
+        } else ui.banner('CHECKPOINT!', ev.revived.length ? 'Everyone is back on their paws' : sim.easy ? 'If everyone goes down, you start again from here' : (by && sim.players.length > 1 ? `${by.name} gathered the team` : 'Keep going!'), 1600);
         effects.teleport(ev.x, ev.z, by ? by.color : 0x8fdcff);
         effects.reviveBeam(ev.x, ev.z, ev.medic ? 0xff5a6a : 0x8fdcff);
         audio.play('revive');
