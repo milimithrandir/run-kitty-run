@@ -367,7 +367,7 @@ function createLobbyUI(root, cb) {
     if (!opts.versus) vsBtn.style.display = 'none';
     vsBtn.addEventListener('click', () => { saveVersus(!savedVersus()); paint(); });
     const vsOn = () => !!opts.versus && savedVersus();
-    const anyHell = () => (hellAvail('run') || hellAvail('ice')) && !vsOn();
+    const anyHell = () => hellAvail('run') || hellAvail('ice');
     const kindOf = () => (hellAvail(kind) ? kind : hellAvail('run') ? 'run' : 'ice');
     const isHell = () => mode === 'hell' && anyHell();
     const box = el('div', 'rkl-modebox');
@@ -910,7 +910,6 @@ function createLobbyUI(root, cb) {
     r.versusBtn.classList.toggle('rkr-alt', !vs);
     r.versusBtn.classList.toggle('rkr-set', vs);
     r.versusBtn.setAttribute('aria-pressed', String(vs));
-    r.versusBtn.style.display = info.hell ? 'none' : '';   // (no hell versus)
     r.versusBtn.title = vs ? 'Teams against each other: you are matched with versus lobbies and games only. Click to play together instead' : 'Play together: you are matched with lobbies and games that are not versus. Click to play teams against each other';
     r.wait.textContent = (info.phase !== 'lobby'
       ? 'A run is in progress. Joining…'

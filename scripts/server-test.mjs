@@ -227,6 +227,8 @@ async function victory() {
     host.send({ t: 'settings', mode: 'ice', chain: 'all', versus: true }); await sleep(200);
     const lr = guest.last.room;
     ok(notGuest && lr.mode === 'ice' && lr.chain === 'all' && lr.versus && lr.teams.length === 2 && !lr.easy, 'lobby: the host changes the game in the lobby (mode, chained, versus: a team each), nobody else can');
+    host.send({ t: 'settings', mode: 'run', hell: true, hl: true, versus: true }); await sleep(200);
+    ok(guest.last.room.hell && guest.last.room.versus && guest.last.room.mode === 'run', 'lobby: hell can be played versus');
     for (const x of [q1, q2, q3]) x.ws.close();
     for (const x of [a, b, c, d, e2]) x.ws.close();
     await sleep(3500);   // (the connection rate limit)

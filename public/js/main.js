@@ -2292,9 +2292,9 @@ function updateHUD() {
 // versus: the teams' names and points from the server ([id, name, dist, cur, crowns, deaths, revives], shared/sim.js vsTeam)
 function applyVs(list) {
   sim.vsNames = {};
-  for (const [id, name, dist, cur, crowns, deaths, revives] of list) {
+  for (const [id, name, dist, cur, crowns, deaths, revives, far = 0, farBy = 0] of list) {
     sim.vsNames[id] = name;
-    sim.teams[id] = { dist, cur, crowns, deaths, revives };
+    sim.teams[id] = { dist, cur, crowns, deaths, revives, far, farBy };
   }
 }
 // versus: one scoreboard row a team (its points: vsScore), its kitties on hover
@@ -2306,6 +2306,14 @@ function vsRows() {
       revives: t.revives, caught: t.deaths, me: +id === mine, you: +id === mine, members: ks.map((p) => p.name).join(', ') || 'nobody left',
       kitties: ks.map((p) => ({ name: p.name, color: p.color })), gone: !ks.length };   // (the end cards: each name in its cat's colour)
   });
+}
+// versus, everyone down: the team that got furthest on the last level, and its kitty that did ({ name, kitty, far })
+function vsFurthest() {
+  let best = null;
+  for (const [id, t] of Object.entries(sim.teams)) if (!best || (t.far || 0) > best.far) best = { id, far: t.far || 0, by: t.farBy };
+  if (!best) return null;
+  const k = sim.players.find((p) => p.id === best.by), solo = sim.players.filter((p) => p.team === +best.id).length <= 1;
+  return { name: (sim.vsNames && sim.vsNames[best.id]) || 'Team ' + best.id, kitty: k && !solo ? k.name : '', color: k ? k.color : 0xffffff, far: best.far };
 }
 // versus: the teams best first (the final ranking)
 // (a team with nobody left in the game (all left, or joined up with another) isn't placed, as on the server: vsResults)
@@ -3117,7 +3125,7 @@ function tick(dt) {
         time: sim.time,
         // alone: nobody could revive you; nudge toward friends
         alone: sim.players.length === 1 ? (wasOnline ? 'online' : 'solo') : null,
-        ...(sim.versus ? { versus: vsRanking() } : {}),
+        ...(sim.versus ? { versus: vsRanking(), furthest: vsFurthest() } : {}),
         onShare: () => shareRun(false, runSim.time),
       }, () => { ui.hideGameOver(); if (wasOnline) backToLobby(); else startGame(playerCount); }, wasOnline ? 'BACK TO LOBBY' : null,
       // LEAVE GAME: offline back to the title, online out of the lobby (to the lobby list)

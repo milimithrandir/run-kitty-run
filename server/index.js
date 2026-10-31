@@ -880,7 +880,7 @@ function settingsMsg(room, client, msg) {
   const mode = GAME_MODES.includes(msg.mode) ? msg.mode : room.mode;
   const hell = msg.hell === true;
   if (hell && (!HELL_MODES.includes(mode) || (!hellOpenFor(client, mode) && msg.hl !== true))) return send(client.ws, { t: 'error', msg: 'Reach the final level in any mode to open hell, or clear a level of it in someone\'s lobby.' });
-  const versus = msg.versus === true && !hell;
+  const versus = msg.versus === true;
   const next = { mode, hell: hell || undefined, easy: msg.easy === true && !versus, chain: msg.chain === 'all' ? 'all' : msg.chain === true || undefined, versus: versus || undefined };
   const t = { ...room, ...next };
   const cant = room.members.filter((m) => !modeOk(m, mode) || !easyOk(m, t) || !hellOk(m, t) || !chainOk(m, t) || !versusOk(m, t));
@@ -904,7 +904,7 @@ function teamMsg(room, client, msg) {
     if (msg.act === 'search') room.search = !room.search;
     else if (msg.act === 'any') room.searchAny = !room.searchAny;
     else {   // versus on / off: on, everyone a team of their own (every kitty in the lobby has to know versus); off, no teams
-      if (!room.versus && (room.hell || room.members.some((m) => m.v < VERSUS_PROTOCOL))) return;
+      if (!room.versus && room.members.some((m) => m.v < VERSUS_PROTOCOL)) return;
       room.versus = !room.versus || undefined;
       room.teams = new Map();
       for (const m of room.members) m.team = room.versus ? newTeam(room, m) : undefined;
@@ -1080,7 +1080,7 @@ function startMsg(room, withWolves) {
 
 // versus: every team's name and points so far: [id, name, dist, cur, crowns, deaths, revives] (shared/sim.js vsTeam)
 function vsTeams(room) {
-  return Object.entries(room.sim.teams).map(([id, t]) => [+id, (room.teams.get(+id) || {}).name || 'Team ' + id, r3(t.dist), r3(t.cur), t.crowns, t.deaths, t.revives]);
+  return Object.entries(room.sim.teams).map(([id, t]) => [+id, (room.teams.get(+id) || {}).name || 'Team ' + id, r3(t.dist), r3(t.cur), t.crowns, t.deaths, t.revives, r3(t.far || 0), t.farBy | 0]);
 }
 
 function startGame(room, startLevel = 1) {
@@ -1338,9 +1338,20 @@ function countHell(room, events, { memberOf, subOf, once, featDone }) {
     // the account stats' hell table: every hell level cleared, for everyone in the game, with the team's time; all of
     // hell cleared (the victory, after its last levelClear) a win too
     if (e.type === 'levelClear') for (const id of team()) accounts.recordOnline(subOf(id), { type: 'hellClear', mode: room.mode, level: e.level, time: sim.levelTime }, !!sim.easy);
-    if (e.type === 'victory') for (const id of team()) accounts.recordOnline(subOf(id), { type: 'hellWin', mode: room.mode }, !!sim.easy);
+    const escaped = () => { const w = sim.players.find((p) => p.id === sim.lastWinner); return team().filter((id) => !sim.versus || (w && (sim.players.find((p) => p.id === id) || {}).team === w.team)); };
+    if (e.type === 'victory') for (const id of escaped()) accounts.recordOnline(subOf(id), { type: 'hellWin', mode: room.mode }, !!sim.easy);
     if (e.type === 'levelClear') { for (const id of team()) { featDone(id, 'h1'); featDone(id, 'win'); } }   // (and the new song: a hell level beaten)
-    else if (e.type === 'gameOver' || e.type === 'victory' || e.type === 'wipe') {
+    else if (sim.versus && (e.type === 'gameOver' || e.type === 'victory')) {   // (versus: a team each, its place marked)
+      const w = sim.players.find((p) => p.id === sim.lastWinner), tids = Object.keys(sim.teams).map(Number).filter((t) => sim.players.some((p) => p.team === t));
+      for (const t of tids) {
+        const ids = once(sim.players.filter((p) => p.team === t).map((p) => p.id)), run = runId();
+        const far = e.type === 'victory' && w && w.team === t ? 1 : Math.min(1, sim.teams[t].far || 0), tm = tids.filter((o) => vsOrder(sim, o, t) < 0).length;   // (its place: the teams ahead of it)
+        for (const id of ids) {
+          const m = memberOf(id), p = sim.players.find((q) => q.id === id);
+          if (m) levels.recordHell({ acct: m.acct, pid: m.pid, fid: m.fid, name: (p && p.name) || m.name, color: p ? p.color : m.color }, { local: false, easy: !!sim.easy, mode: room.mode, level: e.level, far, team: ids.length, time: sim.time, run, chain: chainedGame(room), vs: true, tm });
+        }
+      }
+    } else if (e.type === 'gameOver' || e.type === 'victory' || e.type === 'wipe') {
       const far = e.type === 'victory' ? 1 : e.far, ids = team(), run = runId();
       for (const id of ids) {
         const m = memberOf(id), p = sim.players.find((q) => q.id === id);
@@ -1372,7 +1383,7 @@ function sendSnapshot(room) {
     vs: sim.versus ? vsTeams(room) : undefined,
     vl: sim.versus ? Object.entries(sim.vsLeft).map(([id, s]) => [+id, r3(s.x), r3(s.z), s.team, s.color, s.by || 0]) : undefined,   // (kitties that left: where, their team and colour, who carries them)
     jv: sim.chain && room.joinVotes && room.joinVotes.size ? [...room.joinVotes].map(([k, v]) => [+k.split(':')[0], k.split(':')[1], v.votes.size, v.agree ? 1 : 0, v.to]) : undefined,   // (chained: joining up: [the lone kitty's id, group, votes, it said yes, one of the group])
-    ad: sim.versus && sim.chain ? Object.entries(sim.anchors).filter(([, a]) => a.drag).map(([id, a]) => [+id, r3(a.x), r3(a.z)]) : undefined,   // (chained versus: bodies dragged on a chain, where they are now)
+    ad: sim.chain && Object.values(sim.anchors).some((a) => a.drag) ? Object.entries(sim.anchors).filter(([, a]) => a.drag).map(([id, a]) => [+id, r3(a.x), r3(a.z)]) : undefined,   // (chained: bodies dragged on a chain, where they are now)
     lw: sim.lastWinner || 0, ct: sim.crownTaken ? 1 : 0,
     it: sim.items.filter((i) => i.taken).map((i) => i.id),
     c: sim.circles.map((c) => [c.playerId, r3(c.x), r3(c.z), r3(c.t)]),
@@ -1556,7 +1567,7 @@ wss.on('connection', (ws, req) => {
         const r = { code: makeCode(), mode, hell: hell || undefined, easy: msg.easy === true && client.v >= (hell ? EASY_HELL_PROTOCOL : EASY_PROTOCOL), chain: client.v >= CHAIN_PROTOCOL ? (msg.chain === 'all' ? 'all' : msg.chain === true || undefined) : undefined, max: Math.max(2, Math.min(NET.MAX_PLAYERS, maxReq)), pass: cleanPass(msg.password), by: client.ipk,
           members: [], hostId: 0, phase: 'lobby', sim: null, tick: 0, pending: [], overAt: 0, victory: null,
           left: new Map(), // tab token -> state of a kitty that left this game (reconnect grace)
-          versus: (msg.versus === true && client.v >= VERSUS_PROTOCOL && !hell) || undefined, teams: new Map(), nextTeam: 1 };   // (versus: no hell, no easy)
+          versus: (msg.versus === true && client.v >= VERSUS_PROTOCOL) || undefined, teams: new Map(), nextTeam: 1 };   // (versus: no easy)
         if (r.versus) r.easy = false;
         stats.lobbyCreated();
         rooms.set(r.code, r);

@@ -1095,6 +1095,52 @@ const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process
       lv.players[1].x += 5; chainLeave(lv, 2); vsLeave(lv, 2); removePlayer(lv, 2);
       lv.state = 'levelclear'; lv.stateTimer = 0.001; stepSim(lv, {}, T); stepSim(lv, {}, T);
       ok(lv.level === 2 && Math.hypot(lv.anchors[2].x - lv.players[0].x, lv.anchors[2].z - lv.players[0].z) < 1.5 && !!lv.vsLeft[2], 'chained versus: at a new level the ring of one that left comes along beside its partner, to be picked up there');
+      // everyone chained: the two either side of a kitty down further apart than two chain lengths would allow it to reach:
+      // it still gets to either of them and revives it
+      {
+        const { collideCircle } = await import('../public/js/shared/maze.js');
+        const md = createSim({ seed: 4, mode: 'run', chain: 'all', players: [{ id: 1, name: 'a' }, { id: 2, name: 'b' }, { id: 3, name: 'c' }] });
+        stepSim(md, {}, T);
+        const ld = md.levelData, path = ld.path, clear = (x, z) => { const c = collideCircle(ld, x, z, 0.5); return Math.hypot(c.x - x, c.z - z) < 1e-6; };
+        let A = null, C = null;   // (two path points ~12 apart with open ground between)
+        for (let i = 0; i < path.length && !A; i++) for (let j = i + 1; j < path.length; j++) {
+          const d = Math.hypot(path[j].x - path[i].x, path[j].z - path[i].z);
+          if (d < 11.5 || d > 12.5) continue;
+          let ok2 = true;
+          for (let s = 0; s <= 20 && ok2; s++) ok2 = clear(path[i].x + (path[j].x - path[i].x) * s / 20, path[i].z + (path[j].z - path[i].z) * s / 20);
+          if (ok2) { A = path[i]; C = path[j]; break; }
+        }
+        const [ma, mb, mc] = md.players;
+        for (const p of md.players) p.invuln = 99;
+        md.enemies.length = 0;
+        ma.x = A.x; ma.z = A.z; mc.x = C.x; mc.z = C.z; mb.x = (A.x + C.x) / 2; mb.z = (A.z + C.z) / 2;
+        for (const p of [ma, mc]) { p.alive = false; md.circles.push({ playerId: p.id, x: p.x, z: p.z, t: 0 }); }
+        for (let i = 0; i < 400 && !ma.alive; i++) { const dx = ma.x - mb.x, dz = ma.z - mb.z, l = Math.hypot(dx, dz) || 1; mb.invuln = 99; stepSim(md, { 2: { x: dx / l, z: dz / l } }, T); }
+        const far = Math.hypot(mc.x - mb.x, mc.z - mb.z);
+        ok(!!A && ma.alive && far < 12.6, 'everyone chained: between two kitties down far apart, it still reaches either one to revive it (never further than they lie apart)');
+      }
+      // chained (not versus): the only one left on its chain touches the ring of one that left and drags that body behind
+      // it (one body at most), instead of being held there
+      {
+        const { chainLeave: cl } = await import('../public/js/shared/sim.js');
+        const al = createSim({ seed: 4, mode: 'run', chain: 'all', players: [{ id: 1, name: 'a' }, { id: 2, name: 'b' }, { id: 3, name: 'c' }] });
+        stepSim(al, {}, T);
+        const [aa] = al.players;
+        for (const id of [2, 3]) { al.players.find((p) => p.id === id).x += 1; cl(al, id); removePlayer(al, id); }
+        const heldAt = { ...al.anchors[2] };
+        aa.x = heldAt.x; aa.z = heldAt.z; aa.invuln = 99; stepSim(al, {}, T);
+        const dragging = al.anchors[2] && al.anchors[2].drag && !al.anchors[3] && JSON.stringify(al.chains) === '[[1,2]]';
+        const dl2 = Math.hypot(aa.x, aa.z), dir2 = { x: -aa.x / dl2, z: -aa.z / dl2 };
+        for (let i = 0; i < 240; i++) { aa.invuln = 99; stepSim(al, { 1: dir2 }, T); }
+        // ...pairs too: its partner gone, the one left drags its body (the other pair as it was)
+        const pp = createSim({ seed: 4, mode: 'run', chain: true, players: [1, 2, 3, 4].map((id) => ({ id, name: 'k' + id })) });
+        stepSim(pp, {}, T);
+        const pa1 = pp.players[0];
+        pp.players[1].x += 1; cl(pp, 2); removePlayer(pp, 2);
+        pa1.x = pp.anchors[2].x; pa1.z = pp.anchors[2].z; pa1.invuln = 99; stepSim(pp, {}, T);
+        const pairDrag = pp.anchors[2] && pp.anchors[2].drag && JSON.stringify(pp.chains) === '[[1,2],[3,4]]';
+        ok(dragging && pairDrag && Math.hypot(al.anchors[2].x - heldAt.x, al.anchors[2].z - heldAt.z) > 2, 'chained (everyone and pairs): the only one left on its chain touches a ring and drags that body behind it (one body at most), not held there');
+      }
       // pairs: a teammate on another chain can't pick up a ring still holding a kitty (it would run unchained); its partner
       // can. A whole pair gone: any teammate picks a ring up, and at a new level the rings come to the start by a teammate
       const pr = createSim({ seed: 4, mode: 'run', versus: true, chain: true, players: [1, 2, 3, 4].map((id) => ({ id, name: 'k' + id, team: 1 })).concat([{ id: 5, name: 'e', team: 2 }, { id: 6, name: 'f', team: 2 }]) });
@@ -1133,6 +1179,15 @@ const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process
       const noPick = !nr.vsLeft[2].by;
       nr.state = 'playing'; na.x = sx - 8;
       const nb2 = addPlayer(nr, { id: 9, name: 'b', color: 0, team: 1 }), was = vsReturn(nr, 2, nb2);
+      // hell versus: each team's furthest kitty this level is kept (who, too), and starts over at the next level
+      const hv = createSim({ seed: 5, mode: 'run', hell: true, versus: true, players: [{ id: 1, name: 'a', team: 1 }, { id: 2, name: 'b', team: 1 }, { id: 3, name: 'c', team: 2 }] });
+      stepSim(hv, {}, T);
+      for (const p of hv.players) { p.invuln = 99; p.runLd = hv.levelData; }
+      hv.players[0].runBest = 0.4; hv.players[1].runBest = 0.1; hv.players[2].runBest = 0.25;
+      hv.players[0].x += 0; stepSim(hv, {}, T);
+      const kept = hv.hell && hv.teams[1].far >= 0.4 && hv.teams[1].farBy === 1 && hv.teams[2].far >= 0.25 && hv.teams[2].farBy === 3;
+      hv.state = 'levelclear'; hv.stateTimer = 0.001; stepSim(hv, {}, T);
+      ok(kept && hv.level === 2 && !hv.teams[1].far && hv.teams[1].dist > 0, 'hell versus: each team keeps how far its furthest kitty got this level (and who), from the start again at the next level');
       ok(heldBack && noPick && was === false && nb2.x === sx && nb2.z === sz && !nr.vsLeft[2], 'versus: one that left holds its team back at how far it got; no pickups while the level is over; back, not carried, it is where it left');
     }
     // level boards: a team's time once, with everyone in it (one run); another team with the same time stays its own slot

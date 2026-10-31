@@ -1559,6 +1559,10 @@ function createUI(root) {
     // versus: who won and the teams' places, no stat rows
     const vs = stats.versus && stats.versus.length ? stats.versus : null;
     if (vs) rows.length = 0;
+    // (...but how far the team that got furthest went: level · %, and its kitty that did)
+    const fur = vs && stats.furthest;
+    if (fur) rows.push({ icon: ICONS.cat, label: `Furthest: <span style="color:${hexColor(fur.color)}">${esc(fur.name)}${fur.kitty ? ` (${esc(fur.kitty)})` : ''}</span>`, v: stats.level | 0,
+      fmt: (v) => (v >= (stats.level | 0) ? `${stats.hell ? 'hell ' : 'level '}${v} · ${Math.floor(fur.far * 100)}%` : String(v)), color: stats.hell ? '#ff7a4a' : '#ffb347' });
     goEl.innerHTML = `<div class="rkr-glass rkr-gameover">
         ${stats.onShare ? '<button class="rkr-statsbtn rkr-setbtn rkr-goshare">📤 SHARE</button>' : ''}
         <div class="rkr-gcat">${ICONS.cat}</div>

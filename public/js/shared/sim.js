@@ -87,17 +87,33 @@ const CHAIN_SNAP = 0.6, CHAIN_PASSES = 4;
 function chainPull(sim, dt, only = null) {
   if (!only) for (const p of sim.players) p.towed = false;
   // a kitty of its chain at an anchor's spot, with two of the chain still in the game: let go (sim.chainRev: the server
-  // tells everyone). Versus: not by a touch (its team picks it up: vsLeft)
+  // tells everyone); the only one of its chain still in the game: it drags that body behind it on the chain from then on
+  // (one body at most: the chain's other rings let go), as in versus. Versus: not by a touch (its team picks it up: vsLeft)
   if (!only && !sim.versus) for (const id of Object.keys(sim.anchors)) {
     const an = sim.anchors[id], g = sim.chains.find((c) => c.includes(+id));
-    if (g && g.filter((o) => findPlayer(sim, o)).length < 2) continue;
-    if (g && !g.some((o) => { const q = findPlayer(sim, o); return q && q.alive && Math.hypot(q.x - an.x, q.z - an.z) < CHAIN_TOUCH; })) continue;
+    if (!an || (g && !g.some((o) => { const q = findPlayer(sim, o); return q && q.alive && Math.hypot(q.x - an.x, q.z - an.z) < CHAIN_TOUCH; }))) continue;
+    if (g && g.filter((o) => findPlayer(sim, o)).length < 2) {
+      if (an.drag) continue;
+      for (const o of g.filter((o) => o !== +id && sim.anchors[o])) chainRelease(sim, o);
+      an.drag = true;
+      sim.chainRev = (sim.chainRev | 0) + 1;
+      continue;
+    }
     chainRelease(sim, +id);
   }
   // (versus: a body dragged behind (anchor.drag: vsLeft) moves along like a kitty standing still)
   const moves = (p) => p.alive || p.drag;
   const links = chainLinks(sim).filter(([a, b]) => (moves(a) || moves(b)) && (!only || a === only || b === only));
   const may = (p) => (p.alive && (!only || p === only)) || !!p.drag;
+  // a kitty between two that hold still (down, or a ring): its two links reach as far as those two lie apart, so it can
+  // always get to either of them (to revive it), never further; any other link: CHAIN_LEN (soft from CHAIN_SOFT)
+  const nb = new Map();
+  for (const [a, b] of links) { (nb.get(a.id) || nb.set(a.id, []).get(a.id)).push(b); (nb.get(b.id) || nb.set(b.id, []).get(b.id)).push(a); }
+  const lenOf = (a, b) => {
+    const p = a.alive && !moves(b) ? a : b.alive && !moves(a) ? b : null, ns = p && nb.get(p.id);
+    if (!ns || ns.length < 2 || ns.some(moves)) return CHAIN_LEN;
+    return Math.max(CHAIN_LEN, Math.hypot(ns[0].x - ns[1].x, ns[0].z - ns[1].z));
+  };
   // a's share of the way back (a downed kitty, an anchor: none), from how hard each of the two pulls away along u
   const shareOf = (a, b, ux, uz) => {
     const pa = Math.max(0, -(a.vx * ux + a.vz * uz)), pb = Math.max(0, b.vx * ux + b.vz * uz);
@@ -115,12 +131,12 @@ function chainPull(sim, dt, only = null) {
     }
   };
   for (const [a, b] of links) {
-    const dx = b.x - a.x, dz = b.z - a.z, d = Math.sqrt(dx * dx + dz * dz);
-    if (!(d > CHAIN_SOFT)) continue;
+    const dx = b.x - a.x, dz = b.z - a.z, d = Math.sqrt(dx * dx + dz * dz), len = lenOf(a, b), soft = len - (CHAIN_LEN - CHAIN_SOFT);
+    if (!(d > soft)) continue;
     const ux = dx / d, uz = dz / d, [wa, pa, pb] = shareOf(a, b, ux, uz);
     // stretching: undo that share of this tick's drifting apart (so the chain gets tighter and tighter but never jerks
     // to a stop)
-    const ex = Math.min(Math.min(1, (d - CHAIN_SOFT) / (CHAIN_LEN - CHAIN_SOFT)) * (pa + pb) * dt, d - CHAIN_SOFT);
+    const ex = Math.min(Math.min(1, (d - soft) / (len - soft)) * (pa + pb) * dt, d - soft);
     if (!(ex > 1e-6)) continue;
     pull(a, b, ux, uz, d, ex, wa);
     // on ice a kitty being dragged (not pulling away itself) picks up the pull as speed toward its partner: the ice then
@@ -131,7 +147,7 @@ function chainPull(sim, dt, only = null) {
   for (let pass = 0; pass < CHAIN_PASSES; pass++) {
     let moved = false;
     for (const [a, b] of links) {
-      const dx = b.x - a.x, dz = b.z - a.z, d = Math.sqrt(dx * dx + dz * dz), over = d - CHAIN_LEN;
+      const dx = b.x - a.x, dz = b.z - a.z, d = Math.sqrt(dx * dx + dz * dz), over = d - lenOf(a, b);
       if (!(over > 1e-4)) continue;
       const ex = over <= CHAIN_SNAP ? over : pass === 0 ? Math.min(over, CHAIN_REEL * CFG.KITTY_SPEED * dt) : 0;
       if (!(ex > 0)) continue;
@@ -162,6 +178,8 @@ function vsTrack(sim) {
   for (const p of sim.players) {
     const f = sim.enteredCenter.includes(p.id) ? 1 : p.runLd === ld ? Math.min(1, p.runBest || 0) : 0;
     low.set(p.team, Math.min(low.has(p.team) ? low.get(p.team) : Infinity, f));
+    const t = vsTeam(sim, p.team);
+    if (f > (t.far || 0)) { t.far = f; t.farBy = p.id; }   // (its furthest kitty this level, and who)
   }
   // (one that left, not picked up yet: still holds its team back at how far it had got)
   for (const s of Object.values(sim.vsLeft)) if (!s.by && s.f != null && low.has(s.team)) low.set(s.team, Math.min(low.get(s.team), s.f));
@@ -406,7 +424,7 @@ function makeLevel(sim, level) {
   }
   sim.items = items;
   sim.circles = [];
-  if (sim.versus) for (const t of Object.values(sim.teams)) { t.dist += t.cur; t.cur = 0; }   // (the level before: banked)
+  if (sim.versus) for (const t of Object.values(sim.teams)) { t.dist += t.cur; t.cur = 0; t.far = 0; t.farBy = 0; }   // (the level before: banked)
   sim.enteredCenter = [];
   sim.checkpointsHit = [];
   sim.vsCp = {};
