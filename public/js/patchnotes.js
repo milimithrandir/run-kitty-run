@@ -2,6 +2,33 @@
 // When you ship something players will notice, add a line to the top entry (or start a new one).
 const PATCH_NOTES = [
   {
+    version: '1.2', date: '2026-10-31', title: 'Chained',
+    items: [
+      'New ⚔ Versus option (Multiplayer, every mode): teams against each other. Make teams in the lobby (up to 5 kitties each), give yours a name and press READY when you are set; JOIN asks to join another team and someone in it accepts. It works with Chained too (then every team needs at least two kitties)',
+      '⚙ CHANGE MODE in the lobby: the host switches the mode, Normal / Easy, Chained or Versus for everyone there, no new lobby or inviting everyone again',
+      'Lobby buttons in colours of their own (not all blue any more): INVITE FRIENDS, CHANGE MODE, FIND PLAYERS, and the switches green while on',
+      '🔍 FIND PLAYERS in any lobby (FIND OPPONENTS in versus): look for others searching too, and get put together in one lobby or join a game in progress. Turn on 🌐 ANY MODE to match lobbies and games of other modes too, and ⚔ VERSUS ON / OFF to pick teams against each other or playing together',
+      'How Versus works: you can only revive your own team, and a checkpoint only gathers your team. Your team takes the crown once all of you have reached the goal, which ends the level for everyone. Points: how far your slowest kitty gets on each level, 5 a crown, -1 each time one of you is caught (revives give no points). When everyone is down, the team with the most points wins; a draw goes to more crowns, then fewer times caught',
+      'Chained games: a kitty left on its own on its chain can join another group. Kitties of that group stand on its ring or body and vote, and it says yes (ASK TO JOIN, or JOIN?); if it was down, joining brings it back up. If its partner comes back, the two pair up again',
+      'Leaving a versus game counts as being caught: a ring shows where you left, and a teammate has to pick you up and carry you into the goal before your team can take the crown. Come back within 10 minutes and you are with your team again (next to whoever is carrying you, or at your teammate furthest behind)',
+      'In a versus game the scoreboard shows the teams (hover a name to see its kitties), your team has full cards and the others small faces, opponents\' downed kitties are greyed out (and only yours show on the minimap), and your kitty giggles when an opponent is caught',
+      'Versus results: the end screen ranks the teams (top 3, plus yours if lower); your swag account counts your Versus games and wins, and the STATS page counts Versus games',
+      'New ⛓ Chained option for every mode (under the mode, in Local co-op and when you create a lobby): kitties are chained together in pairs, or one chain through the whole team (Everyone, in Multiplayer). The chain stretches and pulls: run off and your partner gets dragged along, and on ice a towed skater builds up speed. In the lobby, click a kitty to chain up with them. Chained games have their own level times and fastest lists',
+      'Chained kitties share their boots: a pair picked up by one speeds up the whole chain, and when one of you is caught the chain loses half of them',
+      'Someone leaving a chained game leaves a ring where they were: touch it to join the chain up again, or they take their place again if they come back',
+      'RESTART GAME on the game-over card (the lobby\'s host): straight into a new game, without going back to the lobby',
+      'Score: up to 20 points per map for how far you ran yourself, +5 for a crown, +1 for each kitty you revive, -1 each time you are caught. Kitties a checkpoint brings back now count as revives for whoever reached it',
+      'Boots no longer make you turn slower on ice: with boots you turn just as tightly as without',
+      'Vote to knock down: a kitty that has stood still for 30 seconds can be voted down. Spectate it (Tab, or while you are down) and press 💀 VOTE KNOCK DOWN; once a vote has started everyone sees it at the top of the screen and can join in. Nothing pops up just for standing still',
+      'Coming back to a game: you have 10 minutes to rejoin (it was 1) and get your kitty back as it was, now also from a new tab or after closing the game; leaving from the menu and joining again puts you straight back in',
+      'The win screen ranks everyone by score: the top 3, plus you if you placed lower, and +N more to see the rest. A draw goes to more crowns, then fewer times caught',
+      'Fixed: wolves standing still for a second or two after a level loads (mostly at the start, or after restarting)',
+      'Fixed: Firefox and Safari built some levels a little differently, so wolves could jump about online',
+      'Fixed: wolves frozen after an easy game\'s level starts over',
+      'The mode buttons in the menu have their own colours',
+    ],
+  },
+  {
     version: '1.1', date: '2026-10-07', title: 'Your number',
     items: [
       'Music: the songs play in a shuffled order, a new one every visit (Settings: Shuffle ON / OFF)',

@@ -28,10 +28,10 @@ let run = null;
 const analytics = {
   visit() { send('visit'); },
   // chain: false, true (pairs) or 'all' (everyone on one chain)
-  runStart(kind, mode, hell = false, chain = false, easy = false) {
+  runStart(kind, mode, hell = false, chain = false, easy = false, versus = false) {
     if (run) analytics.runEnd();
     run = { t0: performance.now() };
-    send('run_start', { kind, mode, ...(hell ? { hell: true } : {}), ...(chain ? { chain: chain === 'all' ? 'all' : true } : {}), ...(easy ? { easy: true } : {}) });
+    send('run_start', { kind, mode, ...(hell ? { hell: true } : {}), ...(chain ? { chain: chain === 'all' ? 'all' : true } : {}), ...(easy ? { easy: true } : {}), ...(versus ? { versus: true } : {}) });
   },
   level(level) { if (run) send('level', { level }); },
   levelMismatch(mode, level, ver, what) { send('level_mismatch', { mode, level, ver, what }); },   // what: 'items' | 'wolves' | 'items+wolves'
@@ -62,6 +62,8 @@ const CSS = `
 .rks-hellbars .rks-fill{background:linear-gradient(90deg,#ff5c3a,#ffb08f) !important;}
 .rks-h.rks-chainh{color:#c9b6ff;}
 .rks-chainbars .rks-fill{background:linear-gradient(90deg,#9b7dff,#d6c8ff) !important;}
+.rks-h.rks-vsh{color:#ffb39a;}
+.rks-vsbars .rks-fill{background:linear-gradient(90deg,#ff8a5c,#ffc9a8) !important;}
 .rks-bar{display:grid;grid-template-columns:190px 1fr 92px;gap:10px;align-items:center;font-weight:800;font-size:14px;text-align:left;}
 .rks-track{height:16px;border-radius:8px;background:rgba(255,255,255,.08);overflow:hidden;}
 .rks-fill{height:100%;border-radius:8px;background:linear-gradient(90deg,#ffcf5a,#ff9ec4);}
@@ -231,6 +233,16 @@ function openStatsPage(root) {
       row.append(el('div', null, '⛓ Chained'), track, num);
       cb.appendChild(row);
       chainPart.push(el('div', 'rks-h rks-chainh', 'Chained (games)'), cb);
+    }
+    // versus games (online; also counted above)
+    if (d.versus && d.versus.games > 0) {
+      const vb = el('div', 'rks-bars rks-vsbars'), row = el('div', 'rks-bar');
+      const track = el('div', 'rks-track'), fill = el('div', 'rks-fill');
+      fill.style.width = Math.min(100, (d.versus.games / topRuns) * 100) + '%';
+      track.appendChild(fill);
+      row.append(el('div', null, '⚔ Versus'), track, el('div', 'rks-num', fmt(d.versus.games)));
+      vb.appendChild(row);
+      chainPart.push(el('div', 'rks-h rks-vsh', 'Versus (games)'), vb);
     }
     body.append(
       grid,

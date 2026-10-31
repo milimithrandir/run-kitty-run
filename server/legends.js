@@ -163,8 +163,8 @@ function createLegends(file) {
     return out;
   };
   const publicLists = () => ({
-    firsts: Object.fromEntries(LIST_MODES.map((m) => [m, firsts[m].map((f) => withPaid({ win: f.win, at: f.at, total: f.total, name: f.name, color: f.color, text: f.text || '', ...(f.chain ? { chain: 1 } : {}) }, f.keys))])),
-    fastest: Object.fromEntries(LIST_MODES.map((m) => [m, fastest[m].map((f) => ({ win: f.win, at: f.at, total: f.total, kind: f.kind, ...(f.chain ? { chain: 1 } : {}), team: (f.team || []).map((t, j) => withPaid(t, f.keys && f.keys[j])) }))])),
+    firsts: Object.fromEntries(LIST_MODES.map((m) => [m, firsts[m].map((f) => withPaid({ win: f.win, at: f.at, total: f.total, name: f.name, color: f.color, text: f.text || '', ...(f.chain ? { chain: 1 } : {}), ...(f.vs ? { vs: 1 } : {}) }, f.keys))])),
+    fastest: Object.fromEntries(LIST_MODES.map((m) => [m, fastest[m].map((f) => ({ win: f.win, at: f.at, total: f.total, kind: f.kind, ...(f.chain ? { chain: 1 } : {}), ...(f.vs ? { vs: 1 } : {}), team: (f.team || []).map((t, j) => withPaid(t, f.keys && f.keys[j])) }))])),
   });
   // (cached a minute: the swag numbers can change without the board changing)
   function boardJson() {
@@ -199,12 +199,12 @@ function createLegends(file) {
     win.entries.forEach((e, idx) => {
       if (F.some((f) => samePerson(f, keyList[idx], e.name))) { renameFirst(m, keyList[idx], e.name); return; }
       if (F.length >= LIST_MAX) return;
-      F.push({ win: win.id, idx, at: win.at, ...(Number.isFinite(win.total) ? { total: win.total } : {}), name: e.name, color: e.color, text: e.text || '', keys: keyList[idx], ...(win.chain ? { chain: 1 } : {}) });
+      F.push({ win: win.id, idx, at: win.at, ...(Number.isFinite(win.total) ? { total: win.total } : {}), name: e.name, color: e.color, text: e.text || '', keys: keyList[idx], ...(win.chain ? { chain: 1 } : {}), ...(win.vs ? { vs: 1 } : {}) });
     });
     if (firstEver) keyList.forEach((k) => golden.push({ win: win.id, keys: k.slice() }));
     if (!Number.isFinite(win.total)) return;
     const teamKey = keyList.map((k) => k[0]).sort().join('|');
-    const entry = { win: win.id, at: win.at, total: win.total, kind: win.kind, ...(win.chain ? { chain: 1 } : {}), team: win.entries.map((e) => ({ name: e.name, color: e.color, text: e.text || '' })), keys: keyList, teamKey };
+    const entry = { win: win.id, at: win.at, total: win.total, kind: win.kind, ...(win.chain ? { chain: 1 } : {}), ...(win.vs ? { vs: 1 } : {}), team: win.entries.map((e) => ({ name: e.name, color: e.color, text: e.text || '', ...(e.tm != null ? { tm: e.tm } : {}) })), keys: keyList, teamKey };
     const cat = catOf(entry), L = fastest[m], mine = L.findIndex((f) => f.teamKey === teamKey && catOf(f) === cat);
     if (mine >= 0) { if (L[mine].total <= win.total) return; L.splice(mine, 1); }
     L.push(entry);
@@ -233,14 +233,16 @@ function createLegends(file) {
   }
 
   // A room won: one legend with everyone in it (names only until they write something), and a signing window each.
-  function recordWin(mode, runTime, members, total, chain = false) {
+  // (versus: each member's team's place, 0 the winners: the board's │ between teams)
+  function recordWin(mode, runTime, members, total, chain = false, versus = false) {
     const now = Date.now();
     const win = {
       id: newId(now), at: new Date(now).toISOString(), mode,
       runTime: Number.isFinite(runTime) ? Math.round(runTime * 10) / 10 : null,
       ...(Number.isFinite(total) ? { total: Math.round(total * 10) / 10 } : {}),
       ...(chain && members.length > 1 ? { chain: 1 } : {}),   // (played on chains)
-      entries: members.map((m) => ({ name: m.name, color: m.color, text: '', at: null })),
+      ...(versus ? { vs: 1 } : {}),   // (versus: teams against each other, the best team named first)
+      entries: members.map((m, i) => ({ name: m.name, color: m.color, text: '', at: null, ...(Array.isArray(versus) && Number.isInteger(versus[i]) ? { tm: versus[i] } : {}) })),
     };
     members.forEach((m, idx) => { for (const k of keysOf(m)) elig.set(k, { win, idx, until: now + SIGN_WINDOW_MS }); });
     credit(win, members.map(keysOfMember));

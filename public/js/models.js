@@ -1791,11 +1791,15 @@ function createItemModel(type) {
 // ---------------------------------------------------------------------------
 // Revive circle
 // ---------------------------------------------------------------------------
-function createReviveCircleModel(color) {
+// faint: another team's (versus): grey and dim, no motes and no bright outer ring, so it doesn't read as one of yours to
+// revive
+function createReviveCircleModel(color, { faint = false } = {}) {
   const R = CFG.REVIVE_RADIUS;
   const group = new THREE.Group();
   group.name = 'reviveCircle';
-  const col = new THREE.Color(color === undefined ? 0xffffff : color);
+  if (faint) color = 0x8a8a94;
+  const dim = faint ? 0.45 : 1;
+  const col = new THREE.Color(color === undefined ? 0xffffff : color).multiplyScalar(dim);
 
   const haloMat = new THREE.MeshBasicMaterial({ map: ringHaloTexture(), color: col.clone().multiplyScalar(0.8), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
   const halo = new THREE.Mesh(cgeo('reviveHalo', () => flatDisc(R / 0.75, 40)), haloMat);
@@ -1804,6 +1808,7 @@ function createReviveCircleModel(color) {
   const ringMat = new THREE.MeshBasicMaterial({ color: col.clone(), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
   const ring = new THREE.Mesh(cgeo('reviveRing', () => flatRing(R - 0.07, R + 0.05, 56)), ringMat);
   ring.position.y = 0.04; ring.renderOrder = 2; group.add(ring);
+  ring.visible = !faint;
 
   const dashMat = new THREE.MeshBasicMaterial({ color: col.clone().multiplyScalar(0.85), transparent: true, opacity: 0.8, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
   const dash = new THREE.Mesh(cgeo('reviveDash', () => dashedRingGeometry(R * 0.72, R * 0.72 + 0.06, 14, 0.55, 3)), dashMat);
@@ -1814,7 +1819,7 @@ function createReviveCircleModel(color) {
   const moteMat = new THREE.MeshBasicMaterial({ color: col.clone().lerp(new THREE.Color(0xffffff), 0.5), transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
   const motes = [];
   const moteGeo = cgeo('mote', () => new THREE.OctahedronGeometry(0.05, 0));
-  for (let i = 0; i < 9; i++) {
+  for (let i = 0; i < (faint ? 0 : 9); i++) {
     const m = new THREE.Mesh(moteGeo, moteMat);
     const a = (i / 9) * TAU_ + Math.random() * 0.4;
     const r = R * (0.35 + Math.random() * 0.6);
@@ -1835,7 +1840,7 @@ function createReviveCircleModel(color) {
     ringMat.color.copy(baseRing).multiplyScalar(0.7 + 0.3 * pulse);
     const rs = 1 + 0.04 * pulse;
     ring.scale.set(rs, 1, rs);
-    haloMat.opacity = 0.35 + 0.2 * pulse;
+    haloMat.opacity = (0.35 + 0.2 * pulse) * dim;
     dash.rotation.y = t * 0.9;
     dash2.rotation.y = -t * 1.4;
     for (const m of motes) {

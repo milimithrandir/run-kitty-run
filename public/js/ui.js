@@ -24,6 +24,8 @@ function isPale(c) {
   const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
   return 0.299 * r + 0.587 * g + 0.114 * b > 175;
 }
+// the end cards' order: more points, then more crowns, then fewer times caught (main.js sorts by it too)
+function rankOrder(a, b) { return (b.score - a.score) || ((b.crowns || 0) - (a.crowns || 0)) || ((a.caught || 0) - (b.caught || 0)); }
 function hexColor(c) {
   if (typeof c === 'string') return c;
   return '#' + ((c >>> 0) & 0xffffff).toString(16).padStart(6, '0');
@@ -158,7 +160,7 @@ const CSS = `
 .rkr-card .rkr-paid{font-size:13px;font-weight:900;line-height:1;white-space:nowrap;font-variant-numeric:tabular-nums;
   color:#ffd56b;background:rgba(20,8,40,.6);padding:3px 7px;border-radius:7px;text-shadow:none;
   margin-left:-7px;}   /* (its digits start right under the name) */
-.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you) .rkr-paid{display:none;}
+.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you):not(.rkr-full) .rkr-paid{display:none;}
 /* the account total in a little goldfish (fishHTML draws it as long as the number needs); the digits sit on its body */
 .rkr-fish{position:relative;display:inline-flex;align-items:center;height:18px;font-size:12px;font-weight:900;line-height:1;white-space:nowrap;
   font-variant-numeric:tabular-nums;color:#4a1d00;text-shadow:none;filter:drop-shadow(0 1px 1px rgba(0,0,0,.35));}
@@ -186,15 +188,17 @@ const CSS = `
   font-variant-numeric:tabular-nums;color:#e9e2ff;}
 .rkr-timer svg{width:18px;height:18px;color:#cdbfff;}
 .rkr-cards{display:flex;flex-direction:column;gap:8px;}
-/* vote to kill (online): beside the card of a kitty that has stood still 10 s; on your own card a warning to move */
-.rkr-vk{position:absolute;left:100%;top:50%;transform:translateY(-50%);margin-left:8px;white-space:nowrap;pointer-events:auto;cursor:pointer;
-  font:inherit;font-weight:900;font-size:12px;letter-spacing:.04em;color:#fff;padding:5px 10px;border-radius:999px;
-  background:linear-gradient(180deg,#ff7a8a,#e0344f);border:2px solid #3a1650;box-shadow:0 3px 0 #3a1650;}
-.rkr-vk:hover{filter:brightness(1.1);}
-.rkr-vk.rkr-voted{background:linear-gradient(180deg,#9a8fb0,#6d6488);cursor:default;}
-.rkr-vk.rkr-self{background:linear-gradient(180deg,#ffd56b,#ff9d2e);color:#3a1650;cursor:default;}
-.rkr-vk.rkr-hidden{display:none;}
-@media (max-width:600px){ .rkr-vk .rkr-vkl{display:none;} .rkr-vk{padding:4px 8px;} }   /* (phones: just the skull and the votes) */
+/* vote to kill (online): started from the spectate bar (main.js), then shown to everyone under the top middle: one
+   line a kitty being voted on, with VOTE; on yours a warning to move */
+.rkr-votes{display:flex;flex-direction:column;align-items:center;gap:4px;margin-top:6px;}
+.rkr-vote{display:flex;align-items:center;gap:8px;padding:3px 4px 3px 12px;border-radius:999px;background:rgba(58,22,80,.82);border:2px solid #e0344f;
+  font-weight:900;font-size:13px;color:#fff;white-space:nowrap;pointer-events:auto;max-width:calc(100vw - 24px);}
+.rkr-vote > span{min-width:0;overflow:hidden;text-overflow:ellipsis;}
+.rkr-vote.rkr-self{background:linear-gradient(180deg,#ffd56b,#ff9d2e);border-color:#3a1650;color:#3a1650;padding-right:12px;white-space:normal;border-radius:16px;text-align:center;}
+.rkr-vote button{flex:none;font:inherit;font-weight:900;font-size:12px;color:#fff;padding:3px 10px;border-radius:999px;cursor:pointer;
+  background:linear-gradient(180deg,#ff7a8a,#e0344f);border:2px solid #3a1650;}
+.rkr-vote button:hover{filter:brightness(1.1);}
+.rkr-vote button:disabled{background:linear-gradient(180deg,#9a8fb0,#6d6488);cursor:default;filter:none;}
 .rkr-cards.rkr-many{gap:4px;}
 /* HUD toggle (hides everything but the corner buttons) + touch-only menu button */
 /* corner controls are <button>s: drop the UA button look so they render like the old divs */
@@ -227,6 +231,10 @@ html.rkr-touch .rkr-touchonly{display:block;}
 .rkr-scores .rkr-scr.rkr-scau{color:#fff;}
 .rkr-scores .rkr-scr.rkr-scol{min-width:28px;}   /* (columns: crowns, revives, times caught line up row to row) */
 .rkr-scores .rkr-scr.rkr-szero{opacity:.3;}
+.rkr-scores .rkr-sr.rkr-steam{flex-wrap:wrap;}
+.rkr-scores .rkr-sr.rkr-steam > span:first-child{pointer-events:auto;cursor:default;}
+.rkr-scores .rkr-smem{display:none;flex-basis:100%;margin:-2px 0 3px;font-size:11px;font-weight:700;line-height:1.3;color:rgba(255,255,255,.8);white-space:normal;}
+.rkr-scores .rkr-sr.rkr-sopen .rkr-smem{display:block;}
 .rkr-scores .rkr-sv{pointer-events:auto;cursor:default;}
 .rkr-scores .rkr-scr.rkr-shid{display:none;}   /* (revives and times caught: shown while the score is hovered, or for a moment after a tap) */
 .rkr-scores .rkr-sr.rkr-sopen .rkr-scr.rkr-shid{display:flex;}
@@ -248,30 +256,30 @@ html.rkr-touch .rkr-touchonly{display:block;}
    others (its name, speed and fish stay readable), and a face's hover label keeps its fish full size (1.75 x .68) */
 .rkr-card .rkr-fish{zoom:1.2;}
 .rkr-cards.rkr-many .rkr-card.rkr-you{zoom:.85;}
-.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you) .rkr-tip .rkr-fish{zoom:.9;}   /* (.9 x the faces' 1.3) */
+.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you):not(.rkr-full) .rkr-tip .rkr-fish{zoom:.9;}   /* (.9 x the faces' 1.3) */
 /* big lobbies: everyone but you is just a face (colour + alive / down), no name */
 /* (faces keep the cards' zoom, so a face is exactly the size of the card's boots icon) */
 .rkr-cards.rkr-tiny{display:grid;grid-template-columns:repeat(8,max-content);gap:1px 2px;align-items:center;justify-items:center;max-width:none;}   /* (8 faces a row) */
 .rkr-cards .rkr-card.rkr-you{order:-1;}   /* your own card always on top */
-.rkr-cards.rkr-tiny .rkr-card.rkr-you{grid-column:1 / -1;justify-self:start;margin-bottom:2px;min-width:max-content;}   /* (wider than the faces' rows when its line needs it) */
-.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you){min-width:0;padding:0;border-radius:5px;border-width:1px;gap:0;box-shadow:none;}
-.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you) .rkr-cbody{display:none;}
-.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you){zoom:1.3;}   /* (the faces: a big lobby's 31 others take less room than 4 full cards; the koi rim scales with them) */
-.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you) .rkr-head{width:18px;height:18px;filter:none;}
-.rkr-cards.rkr-tiny .rkr-card.rkr-down:not(.rkr-you) .rkr-head{filter:grayscale(.6);}
-.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you){pointer-events:auto;}
-.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you):hover{z-index:5;}
+.rkr-cards.rkr-tiny .rkr-card.rkr-you,.rkr-cards.rkr-tiny .rkr-card.rkr-full{grid-column:1 / -1;justify-self:start;margin-bottom:2px;min-width:max-content;}   /* (wider than the faces' rows when its line needs it) */
+.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you):not(.rkr-full){min-width:0;padding:0;border-radius:5px;border-width:1px;gap:0;box-shadow:none;}
+.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you):not(.rkr-full) .rkr-cbody{display:none;}
+.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you):not(.rkr-full){zoom:1.3;}   /* (the faces: a big lobby's 31 others take less room than 4 full cards; the koi rim scales with them) */
+.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you):not(.rkr-full) .rkr-head{width:18px;height:18px;filter:none;}
+.rkr-cards.rkr-tiny .rkr-card.rkr-down:not(.rkr-you):not(.rkr-full) .rkr-head{filter:grayscale(.6);}
+.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you):not(.rkr-full){pointer-events:auto;}
+.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you):not(.rkr-full):hover{z-index:5;}
 /* a face with an account total: a koi rim (cream with orange patches, the fish's band of light sliding right to left
    over it) with four little koi swimming round it clockwise (one a side), their bellies tucked behind the face, and its fish in the hover label. A kitty that's down keeps
    the down look (the red rim) */
-.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you){border-width:2px;}
+.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you):not(.rkr-full){border-width:2px;}
 .rkr-card .rkr-koibits{display:none;}
-.rkr-cards.rkr-tiny .rkr-card.rkr-haspaid.rkr-koi:not(.rkr-you):not(.rkr-down){margin:1px;}   /* (the fish may poke a little over the next face) */
-.rkr-cards.rkr-tiny .rkr-card.rkr-haspaid.rkr-koi:not(.rkr-you):not(.rkr-down) .rkr-koibits{display:block;position:absolute;left:-10px;top:-10px;width:38px;height:38px;
+.rkr-cards.rkr-tiny .rkr-card.rkr-haspaid.rkr-koi:not(.rkr-you):not(.rkr-full):not(.rkr-down){margin:1px;}   /* (the fish may poke a little over the next face) */
+.rkr-cards.rkr-tiny .rkr-card.rkr-haspaid.rkr-koi:not(.rkr-you):not(.rkr-full):not(.rkr-down) .rkr-koibits{display:block;position:absolute;left:-10px;top:-10px;width:38px;height:38px;
   overflow:visible;pointer-events:none;}
 /* the classic tag's face: a gold rim */
-.rkr-cards.rkr-tiny .rkr-card.rkr-haspaid:not(.rkr-koi):not(.rkr-you):not(.rkr-down){border-color:#ffd56b;box-shadow:0 0 0 1px rgba(255,213,107,.5);}
-.rkr-cards.rkr-tiny .rkr-card.rkr-haspaid.rkr-koi:not(.rkr-you):not(.rkr-down){border-color:transparent;
+.rkr-cards.rkr-tiny .rkr-card.rkr-haspaid:not(.rkr-koi):not(.rkr-you):not(.rkr-full):not(.rkr-down){border-color:#ffd56b;box-shadow:0 0 0 1px rgba(255,213,107,.5);}
+.rkr-cards.rkr-tiny .rkr-card.rkr-haspaid.rkr-koi:not(.rkr-you):not(.rkr-full):not(.rkr-down){border-color:transparent;
   background:linear-gradient(#24133f,#24133f) padding-box,
     linear-gradient(100deg,transparent 30%,rgba(255,255,255,.85) 42%,rgba(58,42,64,.25) 50%,transparent 58%) border-box,
     conic-gradient(from 20deg,#ff8a2e 0 12%,#fff1d6 12% 52%,#ff8a2e 52% 64%,#fff1d6 64%) border-box;
@@ -279,9 +287,9 @@ html.rkr-touch .rkr-touchonly{display:block;}
 @keyframes rkr-koirim{from{background-position:0 0,0% 0,0 0;}to{background-position:0 0,100% 0,0 0;}}
 /* a face's hover label: its name, and its fish (kept drawn while hidden, so the fish's light is already moving) */
 .rkr-card .rkr-tip{display:none;}
-.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you) .rkr-tip{display:flex;visibility:hidden;align-items:center;gap:8px;position:absolute;left:-2px;top:calc(100% + 4px);
+.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you):not(.rkr-full) .rkr-tip{display:flex;visibility:hidden;align-items:center;gap:8px;position:absolute;left:-2px;top:calc(100% + 4px);
   padding:2px 8px;border-radius:8px;background:rgba(20,10,40,.9);border:1px solid rgba(255,255,255,.2);color:var(--pc);font-weight:900;font-size:13px;white-space:nowrap;pointer-events:none;}   /* (13 x the faces' 1.3: about the fish's size) */
-.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you):hover .rkr-tip{visibility:visible;}
+.rkr-cards.rkr-tiny .rkr-card:not(.rkr-you):not(.rkr-full):hover .rkr-tip{visibility:visible;}
 .rkr-card{--pc:#ffb347;position:relative;display:flex;align-items:center;gap:10px;min-width:210px;padding:8px 12px 8px 8px;border-radius:18px;
   background:linear-gradient(135deg,rgba(30,16,60,.72),rgba(30,16,60,.5));border:2px solid rgba(255,255,255,.14);
   box-shadow:inset 4px 0 0 var(--pc),0 6px 16px rgba(0,0,0,.3);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
@@ -358,7 +366,7 @@ html.rkr-touch .rkr-touchonly{display:block;}
 .rkr-sbar{flex:1;height:7px;border-radius:9px;background:rgba(255,255,255,.12);overflow:hidden;}
 .rkr-sfill{height:100%;width:100%;border-radius:9px;background:linear-gradient(90deg,#5aaaff,#bfe6ff);transform-origin:left center;box-shadow:0 0 8px #5aaaff;}
 
-.rkr-tc{position:absolute;left:50%;top:12px;transform:translateX(-50%);display:flex;gap:10px;align-items:center;}
+.rkr-tc{position:absolute;left:50%;top:12px;transform:translateX(-50%);display:flex;flex-direction:column;gap:0;align-items:center;}
   background:linear-gradient(180deg,rgba(40,20,70,.8),rgba(40,20,70,.55));border:3px solid #ffc93c;color:#ffe08a;
   box-shadow:0 0 0 3px rgba(0,0,0,.25),0 6px 20px rgba(255,190,40,.25);text-shadow:0 2px 0 #6b3d00;font-variant-numeric:tabular-nums;}
 .rkr-resc{display:flex;align-items:center;gap:5px;padding:4px 12px;border-radius:999px;font-weight:800;font-size:16px;
@@ -549,6 +557,22 @@ a.rkr-statsbtn{text-decoration:none;display:inline-block;line-height:normal;}
 .rkr-vfirst svg{width:24px;height:24px;}
 .rkr-vfirst .rkr-vname,.rkr-chip span{-webkit-text-stroke:3px #2b1840;paint-order:stroke fill;}
 .rkr-party{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;max-height:96px;overflow:auto;}
+/* a ranking on the end cards (rankHTML): 1st, 2nd, 3rd... with names, crowns and points; a big game the top 3 and you,
+   the rest under "+N more" */
+.rkr-rank{width:100%;display:flex;flex-direction:column;gap:6px;}
+.rkr-rrow{display:flex;align-items:center;gap:10px;padding:7px 12px;border-radius:14px;background:rgba(0,0,0,.22);font-weight:800;font-size:16px;text-align:left;}
+.rkr-rrow.rkr-rwin{background:rgba(255,207,90,.18);box-shadow:inset 0 0 0 2px #ffcf5a;}
+.rkr-rpl{flex:none;width:34px;font-weight:900;color:#ffcf5a;}
+.rkr-rn{flex:1;min-width:0;text-shadow:0 1px 2px rgba(0,0,0,.85),0 0 1px rgba(0,0,0,.9);}   /* (light cat colours stay readable, the winners' gold row too) */
+.rkr-rn i{font-style:normal;color:rgba(255,255,255,.55);font-weight:700;}
+.rkr-rn small{display:block;font-size:12px;font-weight:700;color:rgba(255,255,255,.6);white-space:normal;line-height:1.3;}   /* (every name, wrapping) */
+.rkr-rs{flex:none;font-weight:900;}
+.rkr-rank .rkr-scr{display:flex;align-items:center;gap:2px;flex:none;font-weight:900;color:#ffd56b;}
+.rkr-rank .rkr-scr svg{width:16px;height:16px;}
+.rkr-rrow.rkr-rhide{display:none;}
+.rkr-rank.rkr-rall .rkr-rrow.rkr-rhide{display:flex;}
+.rkr-rmore{font:inherit;font-weight:900;font-size:14px;color:#fff6d8;padding:7px 12px;border-radius:14px;cursor:pointer;background:rgba(0,0,0,.22);border:2px dashed rgba(255,255,255,.3);}
+.rkr-rmore:hover{border-color:#ffcf5a;}
 .rkr-chip{display:flex;align-items:center;gap:4px;padding:2px 10px 2px 4px;border-radius:999px;background:rgba(0,0,0,.25);font-weight:800;font-size:13px;}
 .rkr-chip .rkr-cat{width:20px;height:20px;}
 .rkr-vbtns{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;}
@@ -683,7 +707,9 @@ function createUI(root) {
   const rescEl = el('div', 'rkr-resc', ICONS.revive + '<span>0</span>');
   const rescTxt = rescEl.querySelector('span');
   rescEl.title = 'Rescues';
-  tc.append(rescEl);
+  const votesEl = el('div', 'rkr-votes');
+  votesEl.addEventListener('click', (e) => { const b = e.target.closest('button[data-id]'); if (b && !b.disabled && voteKillCb) voteKillCb(+b.dataset.id); });
+  tc.append(rescEl, votesEl);
 
   const tr = el('div', 'rkr-tr');
   const hintEl = el('div', 'rkr-hint', '<span class="rkr-k" data-act="pause"></span>pause <span class="rkr-k" data-act="hud"></span>hud <span class="rkr-k rkr-fullkey" data-act="full"></span><span class="rkr-fullkey">full</span> <span class="rkr-k" data-act="sound"></span><span class="rkr-snd">mute</span>');
@@ -832,7 +858,6 @@ function createUI(root) {
          <div class="rkr-shield rkr-hidden">${ICONS.shield}<div class="rkr-sbar"><div class="rkr-sfill"></div></div></div>
        </div>
        <div class="rkr-tip"><span></span><span class="rkr-fish rkr-hidden"></span></div>
-       <button class="rkr-vk rkr-hidden"></button>
        <svg class="rkr-koibits" viewBox="0 0 38 38" aria-hidden="true"><g mask="url(#rkr-koi-behind)"><use href="#rkr-koi" transform="translate(20 9) scale(.75)"/><use href="#rkr-koi" transform="translate(29 20) rotate(90) scale(.75)"/><use href="#rkr-koi" transform="translate(18 29) rotate(180) scale(.75)"/><use href="#rkr-koi" transform="translate(9 18) rotate(-90) scale(.75)"/></g><rect x="10" y="10" width="18" height="18" rx="3.5" fill="none" stroke="#2b1840" stroke-width=".6"/></svg>`);
     const refs = {
       root: c,
@@ -847,28 +872,14 @@ function createUI(root) {
       tipName: c.querySelector('.rkr-tip > span'),
       tipFish: c.querySelector('.rkr-tip > .rkr-fish'),
       medic: c.querySelector('.rkr-medic'),
-      vk: c.querySelector('.rkr-vk'),
       v: { paid: 0, name: null, color: null, alive: null, lives: null, speed: null, shield: null },
     };
-    refs.vk.addEventListener('click', () => { const v = refs.v; if (v.vkId != null && v.vkCan && !v.vkVoted && voteKillCb) voteKillCb(v.vkId); });
     cardsEl.appendChild(c);
     return refs;
   }
 
   function updateCard(card, p) {
     const v = card.v;
-    // vote to kill: 'VOTE KILL 1/2' beside a kitty standing still, 'VOTED 1/2' once voted; your own: a warning to move
-    const n = p.afk ? ` ${p.afkVotes}/${p.afkNeed}` : '';
-    const vk = !p.afk ? '' : p.you ? `💤<span class="rkr-vkl"> AFK: move!</span>${n}` : p.canVote ? (p.voted ? `✓<span class="rkr-vkl"> VOTED</span>${n}` : `💀<span class="rkr-vkl"> VOTE KILL</span>${n}`) : `💤<span class="rkr-vkl"> AFK</span>${n}`;
-    v.vkId = p.id; v.vkCan = !!p.canVote; v.vkVoted = !!p.voted;
-    if (vk !== v.vk) {
-      v.vk = vk;
-      card.vk.innerHTML = vk;
-      card.vk.classList.toggle('rkr-hidden', !vk);
-      card.vk.classList.toggle('rkr-voted', !!p.voted || (!p.you && !p.canVote));
-      card.vk.classList.toggle('rkr-self', !!p.you);
-      card.vk.title = p.you ? 'You have been standing still: the others can vote to knock you down' : 'Standing still for a while: vote to knock this kitty down (it can be revived)';
-    }
     if (p.name !== v.name) { v.name = p.name; card.name.textContent = p.name; card.tipName.textContent = p.name; }   // (and a face's hover label)
     if (p.color !== v.color) {
       v.color = p.color; card.root.style.setProperty('--pc', hexColor(p.color));
@@ -890,6 +901,7 @@ function createUI(root) {
       card.root.classList.toggle('rkr-haspaid', !!v.paid);
     }
     if (!!p.you !== v.you) { v.you = !!p.you; card.root.classList.toggle('rkr-you', v.you); }
+    if (!!p.full !== v.full) { v.full = !!p.full; card.root.classList.toggle('rkr-full', v.full); }   // (versus: a teammate's card, full)
     if ((p.medic || '') !== v.medic) {   // the medic badge (revive unlocks): its look, or none
       v.medic = p.medic || '';
       card.medic.className = 'rkr-medic' + (v.medic ? ' t-' + v.medic : ' rkr-hidden');
@@ -952,10 +964,36 @@ function createUI(root) {
     }
   }
 
+  // votes going on (a kitty standing still with a vote or more against it; started from the spectate bar): a line each
+  let votesKey = '';
+  function paintVotes(ps) {
+    const on = ps.filter((p) => p.afk && p.afkVotes > 0);
+    const key = on.map((p) => [p.id, p.name, p.afkVotes, p.afkNeed, !!p.you, !!p.canVote, !!p.voted].join(',')).join('|');
+    if (key === votesKey) return;
+    votesKey = key;
+    votesEl.textContent = '';
+    for (const p of on) {
+      const row = el('div', 'rkr-vote' + (p.you ? ' rkr-self' : ''));
+      const t = el('span');
+      t.textContent = p.you ? `⚠ The others are voting to knock you down for standing still: move! ${p.afkVotes}/${p.afkNeed}` : `💀 Knock down ${p.name} for standing still? ${p.afkVotes}/${p.afkNeed}`;
+      row.appendChild(t);
+      if (!p.you) {
+        const b = el('button', null, p.voted ? '✓ VOTED' : 'VOTE');
+        b.dataset.id = p.id;
+        b.disabled = !!p.voted || !p.canVote;
+        row.appendChild(b);
+      }
+      votesEl.appendChild(row);
+    }
+  }
+
   function setHUD(d) {
     if (!d) return;
-    cardsEl.classList.toggle('rkr-many', (d.players || []).length > 4);
-    cardsEl.classList.toggle('rkr-tiny', (d.players || []).length > 5);   // faces only (your own card stays full)
+    paintVotes(d.players || []);
+    // (versus: your team's cards full, the other teams' faces)
+    const ps0 = d.players || [], full = d.versus ? ps0.filter((p) => p.you || p.full).length : ps0.length;
+    cardsEl.classList.toggle('rkr-many', full > 4);
+    cardsEl.classList.toggle('rkr-tiny', d.versus ? full < ps0.length : ps0.length > 5);   // faces only (your own card stays full)
     if (!H.visible) { H.visible = true; hud.classList.remove('rkr-off'); }
     const now = performance.now();
     const dt = H.lastNow ? Math.min(0.1, (now - H.lastNow) / 1000) : 0;
@@ -1166,8 +1204,13 @@ function createUI(root) {
     M.colorById.clear();
     for (const p of players) M.colorById.set(p.id, p.color);
 
-    // revive circles
-    const circles = sim.circles || [];
+    // revive circles (versus: also kitties that left, until their team picks them up)
+    // (versus: only your own team's: the others' downed kitties are theirs to worry about)
+    const myTeam = sim.versus ? (players.find((p) => p.id === me) || {}).team : undefined;
+    const left = sim.versus && sim.vsLeft ? Object.entries(sim.vsLeft).filter(([, s]) => !s.by && s.team === myTeam) : [];
+    for (const [id, s] of left) M.colorById.set('v' + id, s.color == null ? 0xaaaaaa : s.color);
+    const own = sim.versus ? (sim.circles || []).filter((c) => (players.find((p) => p.id === c.playerId) || {}).team === myTeam) : sim.circles || [];
+    const circles = left.length ? [...own, ...left.map(([id, s]) => ({ playerId: 'v' + id, x: s.x, z: s.z }))] : own;
     for (let i = 0; i < circles.length; i++) {
       const c = circles[i];
       const col = M.colorById.has(c.playerId) ? M.colorById.get(c.playerId) : 0xffffff;
@@ -1471,6 +1514,33 @@ function createUI(root) {
   ];
   // onLeave: a LEAVE GAME button next to TRY AGAIN / BACK TO LOBBY; onAgain (a lobby's host): a RESTART GAME button
   // above them (straight into a new game, the lobby skipped; it reads STARTING… until the game starts)
+  // A ranking, best first (list: [{ name, color, score, crowns, caught, me, kitties?: [{ name, color }] (a team's, under
+  // its name) }], in rankOrder; what: 'team' / 'kitty'). A draw on points goes to more crowns, then fewer times caught;
+  // all three the same share a place (two 1st, then 3rd), the 1st ones all gold. More than RANK_SHOW: the top places and
+  // yours, the rest behind "+N more" (wireRankMore)
+  const RANK_SHOW = 3;
+  function rankHTML(list, what = 'kitty') {
+    const at = list.map((t) => list.filter((o) => rankOrder(o, t) < 0).length);   // (its place: how many are ahead)
+    const place = (i) => { const n = at[i] + 1, t = n % 100; return n + (t >= 11 && t <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th'); };
+    const hide = (t, i) => list.length > RANK_SHOW && at[i] >= RANK_SHOW && !t.me, hidden = list.filter(hide).length;
+    const more = hidden + ' more ' + (what === 'team' ? (hidden === 1 ? 'team' : 'teams') : hidden === 1 ? 'kitty' : 'kitties');
+    return `<div class="rkr-rank">${list.map((t, i) => `<div class="rkr-rrow${at[i] === 0 ? ' rkr-rwin' : ''}${hide(t, i) ? ' rkr-rhide' : ''}"><span class="rkr-rpl">${place(i)}</span>
+      <span class="rkr-rn" style="color:${hexColor(t.color)}">${esc(t.name)}${t.me ? ' <i>(you)</i>' : ''}${t.kitties && t.kitties.length ? `<small>${t.kitties.map((k) => `<span style="color:${hexColor(k.color)}">${esc(k.name)}</span>`).join(', ')}</small>` : ''}</span>
+      ${t.crowns > 0 ? `<span class="rkr-scr">${ICONS.crown}${t.crowns}</span>` : ''}<span class="rkr-rs">${t.score > 0 ? '+' : ''}${t.score}</span></div>`).join('')}${hidden ? `<button class="rkr-rmore">+${more}</button>` : ''}</div>`;
+  }
+  // "+N more" shows the rest of the ranking (the card scrolls when it's long)
+  function wireRankMore(node) {
+    for (const b of node.querySelectorAll('.rkr-rmore')) {
+      b.addEventListener('mousedown', (e) => e.preventDefault());   // (keep Enter on the card's main button)
+      b.addEventListener('click', (e) => { e.stopPropagation(); b.closest('.rkr-rank').classList.add('rkr-rall'); b.remove(); });
+    }
+  }
+  // versus: the winning team, or all the teams tied for 1st (points, crowns and times caught all the same: rankOrder;
+  // "A, B and C"; last: ' and ' / ' & ')
+  function winnersOf(list, last) {
+    const top = list.filter((t) => rankOrder(t, list[0]) === 0).map((t) => t.name);
+    return top.length > 1 ? top.slice(0, -1).join(', ') + last + top[top.length - 1] : top[0];
+  }
   function showGameOver(stats, onRestart, buttonLabel, onLeave, onAgain) {
     stats = stats || {};
     onRestartCb = onRestart || null;
@@ -1486,13 +1556,17 @@ function createUI(root) {
       { icon: ICONS.wolf, label: 'Times caught', v: stats.deaths | 0, fmt: String },
     ];
     const line = GO_LINES[((stats.level | 0) + (stats.deaths | 0)) % GO_LINES.length];
+    // versus: who won and the teams' places, no stat rows
+    const vs = stats.versus && stats.versus.length ? stats.versus : null;
+    if (vs) rows.length = 0;
     goEl.innerHTML = `<div class="rkr-glass rkr-gameover">
         ${stats.onShare ? '<button class="rkr-statsbtn rkr-setbtn rkr-goshare">📤 SHARE</button>' : ''}
         <div class="rkr-gcat">${ICONS.cat}</div>
         <h2>GAME OVER</h2>
-        <div class="rkr-gsub">${esc(line)}</div>
+        <div class="rkr-gsub">${vs ? `Everyone is down, ${esc(winnersOf(vs, ' and '))} win!` : esc(line)}</div>
+        ${vs ? rankHTML(vs, 'team') : ''}
         ${stats.alone ? `<div class="rkr-alone">${ICONS.revive}<span><b>Hint:</b> Alone, nobody can revive you when you're caught. Project: Run Kitty Run is made to be beaten together. ${stats.alone === 'online' ? 'Invite some into your lobby!' : 'Play Multiplayer or Local co-op!'}</span></div>` : ''}
-        <div class="rkr-stats">${rows.map((r) => `<div class="rkr-stat"><div class="rkr-ico" style="color:${r.color || '#fff'}">${r.icon}</div><span class="rkr-sl">${r.label}</span><span class="rkr-sv">${r.fmt(0)}</span></div>`).join('')}</div>
+        ${rows.length ? `<div class="rkr-stats">${rows.map((r) => `<div class="rkr-stat"><div class="rkr-ico" style="color:${r.color || '#fff'}">${r.icon}</div><span class="rkr-sl">${r.label}</span><span class="rkr-sv">${r.fmt(0)}</span></div>`).join('')}</div>` : ''}
         <div class="rkr-btns">${onAgain ? '<button class="rkr-btn rkr-goagain">RESTART GAME</button>' : ''}<button class="rkr-btn rkr-gomain">${esc(buttonLabel || 'TRY AGAIN')}</button>${onLeave ? '<button class="rkr-btn rkr-alt rkr-goleave">LEAVE GAME</button>' : ''}</div>
         <div class="rkr-keyhint">press <span class="rkr-k rkr-wide">Enter</span></div>
         <div class="rkr-goslot"></div>
@@ -1502,6 +1576,7 @@ function createUI(root) {
     gcat.querySelector('.rkr-eyes').style.display = 'none';
     gcat.querySelector('.rkr-xeyes').style.display = 'inline';
     gcat.style.animation = 'rkr-wiggle 2.4s ease-in-out infinite';
+    if (vs) { gcat.querySelector('.rkr-eyes').style.display = ''; gcat.querySelector('.rkr-xeyes').style.display = 'none'; gcat.style.color = hexColor(vs[0].color); }   // (versus: the winners' cat, happy)
     goEl.querySelector('.rkr-gomain').addEventListener('click', restart);
     if (onLeave) goEl.querySelector('.rkr-goleave').addEventListener('click', () => { if (!state.gameOver) return; hideGameOver(); onLeave(); });
     if (onAgain) {
@@ -1514,6 +1589,7 @@ function createUI(root) {
       sb.addEventListener('mousedown', (e) => e.preventDefault());   // keep Enter on the main button
       sb.addEventListener('click', () => stats.onShare());
     }
+    wireRankMore(goEl);
     root.appendChild(goEl);
     state.gameOver = true;
     gameOverArmedAt = performance.now() + 700;
@@ -1579,11 +1655,13 @@ function createUI(root) {
     const line = (stats.deaths | 0) === 0 ? 'Not a single kitty caught. Flawless!' : V_LINES[((stats.deaths | 0) + ps.length) % V_LINES.length];
     vEl.innerHTML = `<div class="rkr-glass">
         <div class="rkr-vcrown">${ICONS.crown}</div>
-        <h2>${stats.hell ? 'YOU ESCAPED<br>HELL!' : stats.mode === 'run' ? 'YOU CLEARED<br>RUN MODE!' : stats.mode === 'ice' ? 'YOU CLEARED<br>SKATE MODE!' : 'YOU BEAT<br>RUN KITTY RUN!'}</h2>
+        ${stats.versus && stats.versus.length ? `<h2>${esc(winnersOf(stats.versus, ' & '))}<br>WIN!</h2>${rankHTML(stats.versus, 'team')}` : ''}
+        <h2${stats.versus && stats.versus.length ? ' hidden' : ''}>${stats.hell ? 'YOU ESCAPED<br>HELL!' : stats.mode === 'run' ? 'YOU CLEARED<br>RUN MODE!' : stats.mode === 'ice' ? 'YOU CLEARED<br>SKATE MODE!' : 'YOU BEAT<br>RUN KITTY RUN!'}</h2>
         <div class="rkr-gsub">${esc(line)}</div>
         ${first && ps.length > 1 ? `<div class="rkr-vfirst">${ICONS.crown}<span>First to the goal: <span class="rkr-vname" style="color:${hexColor(first.color)}">${esc(first.name)}</span></span></div>` : ''}
         <div class="rkr-stats">${rows.map((r) => `<div class="rkr-stat"><div class="rkr-ico" style="color:${r.color || '#fff'}">${r.icon}</div><span class="rkr-sl">${r.label}</span><span class="rkr-sv">${r.fmt(0)}</span></div>`).join('')}</div>
-        ${ps.length > 1 ? `<div class="rkr-party">${ps.map((p) => `<span class="rkr-chip" style="color:${hexColor(p.color)}">${ICONS.cat}<span>${p.first ? '👑 ' : ''}${esc(p.name)}</span></span>`).join('')}</div>` : ''}
+        ${stats.versus && stats.versus.length ? '' : stats.ranking && stats.ranking.length > 1 ? rankHTML(stats.ranking, 'kitty')
+          : ps.length > 1 ? `<div class="rkr-party">${ps.map((p) => `<span class="rkr-chip" style="color:${hexColor(p.color)}">${ICONS.cat}<span>${p.first ? '👑 ' : ''}${esc(p.name)}</span></span>`).join('')}</div>` : ''}
         <div class="rkr-vbtns">${(buttons || []).map((b) => `<button class="rkr-btn${b.alt ? ' rkr-alt' : ''}${b.green ? ' rkr-set' : ''}${b.mini ? ' rkr-mini' : ''}"><span>${esc(b.label)}</span>${b.sub ? `<small>${esc(b.sub)}</small>` : ''}</button>`).join('')}</div>
         <div class="rkr-keyhint">press <span class="rkr-k rkr-wide">Enter</span></div>
       </div>`;
@@ -1593,6 +1671,7 @@ function createUI(root) {
       b.addEventListener('mouseenter', () => selectVictory(i));
     });
     vEl._buttons = buttons || [];
+    wireRankMore(vEl);
     root.appendChild(vEl);
     state.victory = true;
     vArmedAt = performance.now() + 1000;
@@ -1665,6 +1744,19 @@ function createUI(root) {
 
   // ================= scoreboard (top right) =================
   let scoresKey = '';
+  // versus: the teams' order on the board (their points move all the time with the distance: re-sorted at most every
+  // VS_SORT_MS, ties kept where they were, so the rows don't jump about)
+  const VS_SORT_MS = 2000;
+  let vsOrder = [], vsSortAt = 0;
+  function steadyOrder(list) {
+    const key = (p) => p.name + '|' + p.color, now = performance.now();
+    if (now - vsSortAt > VS_SORT_MS || list.length !== vsOrder.length || list.some((p) => !vsOrder.includes(key(p)))) {
+      const was = (p) => { const i = vsOrder.indexOf(key(p)); return i < 0 ? 1e9 : i; };
+      vsOrder = [...list].sort((a, b) => b.score - a.score || was(a) - was(b)).map(key);
+      vsSortAt = now;
+    }
+    return vsOrder.map((k) => list.find((p) => key(p) === k));
+  }
   // the row whose revives / times caught are open (its score hovered, or tapped for 3 s): kept here, as the board is rebuilt whenever a score changes
   const sOpen = { who: '', hover: false, tap: 0 };
   const openScores = () => { for (const r of scoresEl.querySelectorAll('.rkr-sr')) r.classList.toggle('rkr-sopen', r.dataset.who === sOpen.who && (sOpen.hover || !!sOpen.tap)); };
@@ -1679,12 +1771,12 @@ function createUI(root) {
     if (kind !== bestKind) { bestKind = kind; best = 0; try { best = parseInt(localStorage.getItem('rkr-best2-' + kind) || '0', 10) || 0; } catch { /* ignore */ } }
     const mine = list.filter((p) => p.me).reduce((m, p) => Math.max(m, p.score), -Infinity);
     if (mine > best) { best = mine; try { localStorage.setItem('rkr-best2-' + bestKind, String(best)); } catch { /* ignore */ } }
-    const all = [...list].sort((a, b) => b.score - a.score);
+    const all = kind && kind.startsWith('versus') ? steadyOrder(list) : [...list].sort((a, b) => b.score - a.score);
     // big lobbies: top 8, plus you if you're further down
     const rows = all.slice(0, 8);
     const meRow = all.find((p) => p.you);
     if (meRow && !rows.includes(meRow)) rows.push(meRow);
-    const key = rows.map((p) => `${p.name}|${p.score}|${p.me}|${p.crown}|${p.crowns}|${p.revives || 0}|${p.caught || 0}|${p.shimmer}|${p.paid || 0}|${p.ps || ''}`).join(',') + '#' + best;
+    const key = rows.map((p) => `${p.name}|${p.score}|${p.me}|${p.crown}|${p.crowns}|${p.revives || 0}|${p.caught || 0}|${p.shimmer}|${p.paid || 0}|${p.ps || ''}|${p.members || ''}`).join(',') + '#' + best;
     if (key === scoresKey) return;
     scoresKey = key;
     scoresEl.textContent = '';
@@ -1712,6 +1804,13 @@ function createUI(root) {
       v.addEventListener('mouseleave', () => { sOpen.hover = false; openScores(); });
       v.addEventListener('click', () => { sOpen.who = who; clearTimeout(sOpen.tap); sOpen.tap = setTimeout(() => { sOpen.tap = 0; openScores(); }, 3000); openScores(); });
       r.appendChild(v);
+      if (p.members) {   // (versus: a team's row; its kitties under it while its name or score is hovered / tapped)
+        r.classList.add('rkr-steam');
+        const mm = el('div', 'rkr-smem'); mm.textContent = p.members; r.appendChild(mm);
+        n.addEventListener('mouseenter', () => { sOpen.who = who; sOpen.hover = true; openScores(); });
+        n.addEventListener('mouseleave', () => { sOpen.hover = false; openScores(); });
+        n.addEventListener('click', () => { sOpen.who = who; clearTimeout(sOpen.tap); sOpen.tap = setTimeout(() => { sOpen.tap = 0; openScores(); }, 3000); openScores(); });
+      }
       scoresEl.appendChild(r);
     }
     openScores();
@@ -1808,4 +1907,4 @@ function createUI(root) {
   };
 }
 
-export { createUI };
+export { rankOrder, createUI };

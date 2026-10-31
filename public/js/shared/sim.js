@@ -57,7 +57,7 @@ function chainGroups(ids, all = false) {
 function chainLinks(sim) {
   const out = [];
   if (!sim.chain || !sim.chains) return out;
-  const at = (id) => findPlayer(sim, id) || (sim.anchors && sim.anchors[id] ? { id, x: sim.anchors[id].x, z: sim.anchors[id].z, vx: 0, vz: 0, alive: false, anchor: true } : null);
+  const at = (id) => findPlayer(sim, id) || (sim.anchors && sim.anchors[id] ? { id, x: sim.anchors[id].x, z: sim.anchors[id].z, vx: 0, vz: 0, alive: false, anchor: true, drag: !!sim.anchors[id].drag } : null);
   for (const g of sim.chains) {
     const ks = g.map(at);
     for (let i = 0; i + 1 < ks.length; i++) {
@@ -87,19 +87,21 @@ const CHAIN_SNAP = 0.6, CHAIN_PASSES = 4;
 function chainPull(sim, dt, only = null) {
   if (!only) for (const p of sim.players) p.towed = false;
   // a kitty of its chain at an anchor's spot, with two of the chain still in the game: let go (sim.chainRev: the server
-  // tells everyone)
-  if (!only) for (const id of Object.keys(sim.anchors)) {
+  // tells everyone). Versus: not by a touch (its team picks it up: vsLeft)
+  if (!only && !sim.versus) for (const id of Object.keys(sim.anchors)) {
     const an = sim.anchors[id], g = sim.chains.find((c) => c.includes(+id));
     if (g && g.filter((o) => findPlayer(sim, o)).length < 2) continue;
     if (g && !g.some((o) => { const q = findPlayer(sim, o); return q && q.alive && Math.hypot(q.x - an.x, q.z - an.z) < CHAIN_TOUCH; })) continue;
     chainRelease(sim, +id);
   }
-  const links = chainLinks(sim).filter(([a, b]) => (a.alive || b.alive) && (!only || a === only || b === only));
-  const may = (p) => p.alive && (!only || p === only);
+  // (versus: a body dragged behind (anchor.drag: vsLeft) moves along like a kitty standing still)
+  const moves = (p) => p.alive || p.drag;
+  const links = chainLinks(sim).filter(([a, b]) => (moves(a) || moves(b)) && (!only || a === only || b === only));
+  const may = (p) => (p.alive && (!only || p === only)) || !!p.drag;
   // a's share of the way back (a downed kitty, an anchor: none), from how hard each of the two pulls away along u
   const shareOf = (a, b, ux, uz) => {
     const pa = Math.max(0, -(a.vx * ux + a.vz * uz)), pb = Math.max(0, b.vx * ux + b.vz * uz);
-    return [!a.alive ? 0 : !b.alive ? 1 : pa + pb > 1e-6 ? (CHAIN_DRAG * pb + (1 - CHAIN_DRAG) * pa) / (pa + pb) : 0.5, pa, pb];
+    return [!moves(a) ? 0 : !moves(b) ? 1 : pa + pb > 1e-6 ? (CHAIN_DRAG * pb + (1 - CHAIN_DRAG) * pa) / (pa + pb) : 0.5, pa, pb];
   };
   // move a and b ex closer (a's share wa); one of them against a wall: the other takes what it couldn't
   const pull = (a, b, ux, uz, d, ex, wa) => {
@@ -139,6 +141,66 @@ function chainPull(sim, dt, only = null) {
     }
     if (!moved) break;
   }
+  // (a dragged body: where it was pulled to; a client predicting its own kitty leaves that to the server)
+  if (!only) for (const [a, b] of links) for (const e of [a, b]) if (e.drag && sim.anchors[e.id]) { sim.anchors[e.id].x = e.x; sim.anchors[e.id].z = e.z; }
+}
+// Versus (sim.versus): teams (p.team) against each other. A kitty only revives its own team (circles and checkpoints:
+// a checkpoint gathers only the team of the kitty that reached it, and stays there for the other teams). A team takes the
+// crown only once all of its kitties have been in the goal this level; that clears the level for everyone, as ever,
+// and counts as one crown for the team (every kitty of it wears it and gets the win). A team's points (vsScore): 20 a
+// map for how far its slowest kitty got on each level (the lowest p.runBest), 5 a crown, -1 a catch; no points for
+// revives. sim.teams: id -> { dist (maps banked from the levels before), cur (this level's), crowns, deaths, revives }
+const VS_MAP = 20, VS_CROWN = 5;
+function vsTeam(sim, id) { return (sim.teams[id] ||= { dist: 0, cur: 0, crowns: 0, deaths: 0, revives: 0 }); }
+const vsScore = (t) => Math.round(VS_MAP * ((t.dist || 0) + (t.cur || 0))) + VS_CROWN * (t.crowns || 0) - (t.deaths || 0);
+const vsMates = (sim, p) => sim.players.filter((q) => q.team === p.team);
+// this level's distance of each team: its slowest kitty's furthest along, one that has been in the goal the whole map
+// (playing only; frozen once the level is over)
+function vsTrack(sim) {
+  if (!sim.versus || sim.state !== 'playing') return;
+  const ld = sim.levelData, low = new Map();
+  for (const p of sim.players) {
+    const f = sim.enteredCenter.includes(p.id) ? 1 : p.runLd === ld ? Math.min(1, p.runBest || 0) : 0;
+    low.set(p.team, Math.min(low.has(p.team) ? low.get(p.team) : Infinity, f));
+  }
+  // (one that left, not picked up yet: still holds its team back at how far it had got)
+  for (const s of Object.values(sim.vsLeft)) if (!s.by && s.f != null && low.has(s.team)) low.set(s.team, Math.min(low.get(s.team), s.f));
+  for (const [id, f] of low) vsTeam(sim, id).cur = f;
+}
+// Versus: a kitty leaving the game (before removePlayer; the server) counts as caught (if it was up), and with teammates
+// still in the game it leaves a spot where it was (sim.vsLeft, drawn like a revive circle) that one of them has to pick
+// up and carry into the goal (s.by: the carrier; caught, it drops it where it went down) before the team can take the
+// crown: so a team can still finish without it, but no faster than with it. Back in time (vsReturn), it is with its
+// team again: where its carrier is if it was being carried, else where it left (its spot; a new level since: at
+// whichever of them is furthest behind).
+function vsLeave(sim, id) {
+  const p = findPlayer(sim, id);
+  if (!sim.versus || !p) return;
+  if (p.alive) vsTeam(sim, p.team).deaths++;
+  for (const [k, s] of Object.entries(sim.vsLeft)) if (s.by === id) { s.by = 0; if (sim.anchors[k] && sim.anchors[k].drag) { sim.anchors[k].drag = false; sim.chainRev = (sim.chainRev | 0) + 1; } }   // (what it carried or dragged: dropped where it is)
+  const f = sim.enteredCenter.includes(p.id) ? 1 : p.runLd === sim.levelData ? Math.min(1, p.runBest || 0) : 0;   // (how far it had got: vsTrack)
+  if (sim.players.some((q) => q !== p && q.team === p.team)) { sim.vsLeft[id] = { x: p.x, z: p.z, team: p.team, color: p.color, by: 0, f }; sim.vsRev = (sim.vsRev | 0) + 1; }
+  if (sim.anchors[id]) Object.assign(sim.anchors[id], { team: p.team, color: p.color });   // (chained: its ring knows whose it is: a new level puts its spot back)
+}
+// (true: it was being carried: it's back up where its carrier is, not down where it went down)
+function vsReturn(sim, oldId, p) {
+  if (!sim.versus) return false;
+  const s = sim.vsLeft[oldId], carrier = s && s.by ? findPlayer(sim, s.by) : null;
+  if (s) { delete sim.vsLeft[oldId]; sim.vsRev = (sim.vsRev | 0) + 1; }
+  if (carrier && sim.chain && !sim.chains.some((c) => c.includes(p.id))) vsChainTo(sim, carrier.id, p.id);   // (chained: onto its carrier's chain, right after it)
+  const ld = sim.levelData, far = (q) => (sim.enteredCenter.includes(q.id) ? 1 : q.runLd === ld ? q.runBest || 0 : 0);
+  const mates = sim.players.filter((q) => q !== p && q.team === p.team), up = mates.filter((q) => q.alive);
+  const last = carrier || (s ? null : (up.length ? up : mates).reduce((a, q) => (!a || far(q) < far(a) ? q : a), null));
+  if (last) { p.x = last.x; p.z = last.z; p.vx = 0; p.vz = 0; p.heading = last.heading; p.runLd = null; }
+  else if (s) { p.x = s.x; p.z = s.z; p.vx = 0; p.vz = 0; p.runLd = null; }
+  return !!carrier;
+}
+// chained versus: one carried (off its chain: it let go when picked up) and back in time is chained to its carrier, right
+// after it on the carrier's chain
+function vsChainTo(sim, carrierId, id) {
+  const c = sim.chains.find((g) => g.includes(carrierId));
+  if (c) c.splice(c.indexOf(carrierId) + 1, 0, id); else sim.chains.push([carrierId, id]);
+  sim.chainRev = (sim.chainRev | 0) + 1;
 }
 // a kitty joining a running chained game (not one coming back: chainRejoin) gets a partner and starts next to it: on
 // one chain (all) at its end; else a kitty on its own, else the last of a chain of three (two pairs then), else onto a
@@ -149,8 +211,10 @@ function chainJoin(sim, p) {
   if (sim.anchors[p.id] && chainRejoin(sim, p.id, p)) { sim.chainRev = (sim.chainRev | 0) + 1; return; }
   if (sim.chains.some((g) => g.includes(p.id))) return;
   const here = (id) => !!findPlayer(sim, id);
+  // versus: only a chain of its own team (one with a kitty of it still in the game)
+  const mine = (g) => !sim.versus || g.some((id) => { const q = findPlayer(sim, id); return q && q !== p && q.team === p.team; });
   // a kitty held on its own by an anchor: the newcomer takes the place that was left, where it was
-  const stuck = sim.chains.find((g) => g.some((id) => sim.anchors[id]) && g.filter((id) => here(id) && id !== p.id).length === 1);
+  const stuck = sim.chains.find((g) => mine(g) && g.some((id) => sim.anchors[id]) && g.filter((id) => here(id) && id !== p.id).length === 1);
   if (stuck) {
     const old = stuck.find((id) => sim.anchors[id]), an = sim.anchors[old];
     stuck[stuck.indexOf(old)] = p.id;
@@ -161,12 +225,12 @@ function chainJoin(sim, p) {
   }
   let mate = null;
   if (sim.chainAll) {
-    const g = sim.chains[0];
+    const g = sim.chains.find(mine);
     if (g) { mate = g[g.length - 1]; g.push(p.id); } else sim.chains.push([p.id]);
   } else {
-    const lone = sim.chains.find((g) => g.length === 1 && here(g[0]) && g[0] !== p.id);
-    const three = sim.chains.find((g) => g.length === 3 && here(g[2]));
-    const pair = sim.chains.find((g) => g.length === 2 && here(g[1]));
+    const lone = sim.chains.find((g) => mine(g) && g.length === 1 && here(g[0]) && g[0] !== p.id);
+    const three = sim.chains.find((g) => mine(g) && g.length === 3 && here(g[2]));
+    const pair = sim.chains.find((g) => mine(g) && g.length === 2 && here(g[1]));
     if (lone) { mate = lone[0]; lone.push(p.id); }
     else if (three) { mate = three.pop(); sim.chains.push([mate, p.id]); }
     else if (pair) { mate = pair[1]; pair.push(p.id); }
@@ -202,6 +266,100 @@ function chainRejoin(sim, oldId, p) {
   if (an) { p.x = an.x; p.z = an.z; delete sim.anchors[oldId]; }
   return true;
 }
+// Joining up (chained games): a kitty left on its own on its chain (loneOf: the others on it left, their rings or bodies
+// still on it) can be voted into another group (the server: kitties of another chain stand on its ring, body or it and vote,
+// more than half of that chain; versus: of that team). groupJoin: its rings and bodies go and it goes on the end of the
+// voters' chain; versus: in their team, whose points stay (two on their own joining up: the team with more points). One
+// that left coming back (mergeReturn, in time) is chained up with its old partner again, and the two split off on their
+// own (versus: their old team, with its points from before and what the team they were in scored since) once that leaves
+// two or more on both sides; until then it's on the chain with them.
+function loneOf(sim, id) {
+  const g = sim.chain && sim.chains.find((c) => c.includes(id));
+  return !!g && !!findPlayer(sim, id) && g.filter((o) => findPlayer(sim, o)).length === 1 && g.length > 1 ? g : null;
+}
+// two teams' order: more points, then more crowns, then fewer times caught (as the end cards and the server); 0: a draw
+function vsCmp(sim, a, b) {
+  const A = sim.teams[a], B = sim.teams[b];
+  if (!A || !B) return (B ? 1 : 0) - (A ? 1 : 0);
+  return (vsScore(B) - vsScore(A)) || (B.crowns - A.crowns) || (A.deaths - B.deaths);
+}
+const vsCopy = (t) => ({ dist: t.dist + t.cur, crowns: t.crowns, deaths: t.deaths, revives: t.revives });
+function groupJoin(sim, loneId, voterId) {
+  const L = findPlayer(sim, loneId), V = findPlayer(sim, voterId), lg = loneOf(sim, loneId);
+  const vg = V && sim.chains.find((c) => c.includes(voterId));
+  if (!L || !V || !lg || !vg || vg === lg) return false;
+  const vLone = loneOf(sim, voterId);   // (two on their own joining up)
+  // (versus: the team kept: the voters', or of two on their own the one with more points)
+  let keep = null;
+  if (sim.versus) {
+    const solo = (p) => sim.players.filter((q) => q.team === p.team).length === 1;
+    keep = solo(L) && solo(V) && vsCmp(sim, L.team, V.team) < 0 ? L.team : V.team;
+  }
+  const base = sim.versus ? vsCopy(vsTeam(sim, keep)) : null;
+  const off = (g, p) => {   // (its rings / bodies go; who they were, for when they come back)
+    const back = g.filter((o) => o !== p.id);
+    for (const o of back) { delete sim.anchors[o]; if (sim.vsLeft) delete sim.vsLeft[o]; }
+    (sim.merges ||= []).push({ lone: p.id, back, team: p.team, into: keep, base });
+    return back;
+  };
+  off(lg, L);
+  if (vLone) off(vg, V);
+  if (sim.versus) for (const t of new Set([L.team, V.team])) if (t !== keep) vsTeam(sim, t).cur = 0;   // (left: no level of its own meanwhile, see groupSplit)
+  if (!L.alive) {   // (down, waiting on its own: joining brings it back up)
+    L.alive = true; L.invuln = CFG.REVIVE_INVULN; L.freeTurn = true;
+    sim.circles = sim.circles.filter((c) => c.playerId !== L.id);
+  }
+  sim.chains = sim.chains.filter((c) => c !== lg);
+  if (vLone) vg.splice(0, vg.length, V.id);
+  vg.push(L.id);
+  if (sim.versus) { L.team = keep; V.team = keep; }
+  sim.chainRev = (sim.chainRev | 0) + 1;
+  sim.vsRev = (sim.vsRev | 0) + 1;
+  return true;
+}
+// one that left (oldId) back in time while its partner is in another group: chained up with it, then the splits
+function mergeReturn(sim, oldId, p) {
+  const r = (sim.merges || []).find((m) => m.back.includes(oldId));
+  if (!r) return false;
+  r.back[r.back.indexOf(oldId)] = p.id;
+  (r.home ||= []).push(p.id);
+  const L = findPlayer(sim, r.lone), g = L && sim.chains.find((c) => c.includes(r.lone));
+  if (!g) { sim.merges = sim.merges.filter((m) => m !== r); return false; }
+  for (const c of sim.chains) { const i = c.indexOf(p.id); if (i >= 0 && c !== g) c.splice(i, 1); }
+  sim.chains = sim.chains.filter((c) => c.length);
+  if (!g.includes(p.id)) g.splice(g.indexOf(r.lone) + 1, 0, p.id);
+  p.x = L.x; p.z = L.z; p.vx = 0; p.vz = 0;
+  if (sim.versus) p.team = L.team;
+  groupSplit(sim);
+  sim.chainRev = (sim.chainRev | 0) + 1;
+  return true;
+}
+// the merged groups that can split off again: its lone kitty and those of it back, two or more, the rest of the chain
+// too (versus: the rest of the team); one left with only its own kitties on the chain goes back to its own team too
+function groupSplit(sim) {
+  for (let again = true; again;) {
+    again = false;
+    for (const r of [...(sim.merges || [])]) {
+      const g = sim.chains.find((c) => c.includes(r.lone));
+      if (!g) { sim.merges = sim.merges.filter((m) => m !== r); continue; }
+      const side = [r.lone, ...(r.home || [])].filter((id) => g.includes(id) && findPlayer(sim, id));
+      const rest = g.filter((id) => !side.includes(id) && findPlayer(sim, id));
+      if (side.length < 2 || (rest.length && rest.length < 2)) continue;
+      if (rest.length) { sim.chains = sim.chains.map((c) => (c === g ? c.filter((id) => !side.includes(id)) : c)); sim.chains.push(side); }
+      if (sim.versus) {
+        for (const id of side) findPlayer(sim, id).team = r.team;
+        const stayed = sim.players.some((q) => q.team === r.team && !side.includes(q.id));   // (others of it played on meanwhile: theirs count)
+        if (r.team !== r.into && r.base && !stayed) {   // (its old team: its points from before, and what the team it was in scored since)
+          const t = vsTeam(sim, r.team), now = vsCopy(vsTeam(sim, r.into));
+          t.dist += now.dist - r.base.dist; t.crowns += now.crowns - r.base.crowns; t.deaths += now.deaths - r.base.deaths; t.revives += now.revives - r.base.revives;
+        }
+      }
+      sim.merges = sim.merges.filter((m) => m !== r);
+      sim.chainRev = (sim.chainRev | 0) + 1;
+      again = true;
+    }
+  }
+}
 // someone who left isn't coming back: off its chain (its partner waits on its own for the next kitty to join)
 function chainRelease(sim, id) {
   if (!sim.chain || !sim.chains) return;
@@ -211,11 +369,12 @@ function chainRelease(sim, id) {
   sim.chainRev = (sim.chainRev | 0) + 1;
 }
 // a kitty leaving the game (before removePlayer): off the end of a chain that keeps two kitties at once, else an anchor
+// (versus: always an anchor, held until its team picks it up: vsLeave)
 function chainLeave(sim, id) {
   const p = findPlayer(sim, id), g = sim.chain && sim.chains.find((c) => c.includes(id));
   if (!p || !g) return;
   const i = g.indexOf(id), still = g.filter((o) => o !== id && findPlayer(sim, o)).length;
-  if ((i === 0 || i === g.length - 1) && still >= 2) chainRelease(sim, id);
+  if (!sim.versus && (i === 0 || i === g.length - 1) && still >= 2) chainRelease(sim, id);
   else { sim.anchors[id] = { x: p.x, z: p.z }; sim.chainRev = (sim.chainRev | 0) + 1; }
 }
 
@@ -247,8 +406,11 @@ function makeLevel(sim, level) {
   }
   sim.items = items;
   sim.circles = [];
+  if (sim.versus) for (const t of Object.values(sim.teams)) { t.dist += t.cur; t.cur = 0; }   // (the level before: banked)
   sim.enteredCenter = [];
   sim.checkpointsHit = [];
+  sim.vsCp = {};
+  sim.vsLeft = {};             // (a new level: the team goes on without them)
   sim.chest = null;            // the lottery chest: { x, z, cx, cz, h, t, open } once a lucky checkpoint is reached
   sim.crownTaken = false;     // the crown floating over the goal, up for grabs each level
   sim.levelTime = 0;
@@ -322,6 +484,7 @@ function makePlayer(def) {
     rescues: 0,
     bonus: 0,   // extra score points (REVIVE_DOUBLE_LEVEL)
     ran: 0,     // maps run this run (the score's distance points, main.js: 20 a map): see trackRun
+    team: def.team | 0,   // versus: its team
     finishes: 0,    // levels this kitty finished first this run (run rewards, see main.js)
     crowned: false, // grabbed the crown at least once this run (wears one from then on)
   };
@@ -333,7 +496,7 @@ function makePlayer(def) {
 // instead of the game being over.
 // hell: Run only / Skate only's final run over and over (config.js HELL_LEVELS; sim.level is the hell level), easy or not;
 // waves: with its wolf waves (waves.js; online only when every kitty's game knows them)
-function createSim({ seed, players = [], startLevel = 1, mode = 'mixed', finales = 0, easy = false, hell = false, waves = false, chain = false } = {}) {   // (chain: true pairs, 'all' everyone on one chain)
+function createSim({ seed, players = [], startLevel = 1, mode = 'mixed', finales = 0, easy = false, hell = false, waves = false, chain = false, versus = false } = {}) {   // (chain: true pairs, 'all' everyone on one chain)
   mode = GAME_MODES.includes(mode) ? mode : 'mixed';
   hell = !!hell && HELL_MODES.includes(mode);
   const lvl = hell ? Math.max(1, Math.min(HELL_LEVELS, startLevel | 0)) : Math.max(1, startLevel | 0);
@@ -368,6 +531,10 @@ function createSim({ seed, players = [], startLevel = 1, mode = 'mixed', finales
     chainAll: chain === 'all',   // ...everyone on one chain
     chains: [],       // ...their chains: lists of player ids, in chain order (chainGroups)
     anchors: {},      // ...where a chained kitty that left the game was: id -> { x, z } (chainLinks)
+    versus: !!versus, // teams against each other (p.team; vsTeam)
+    teams: {},
+    vsCp: {},         // versus: the checkpoints each team has reached this level (team -> [index])
+    vsLeft: {},       // versus: where a kitty that left was, for its team to pick up (id -> { x, z, team }; vsLeave)
   };
   makeLevel(sim, lvl);
   for (let i = 0; i < players.length; i++) {
@@ -375,7 +542,13 @@ function createSim({ seed, players = [], startLevel = 1, mode = 'mixed', finales
     placeAtSpawn(sim, p, i);
     sim.players.push(p);
   }
-  if (sim.chain) sim.chains = chainGroups(sim.players.map((p) => p.id), sim.chainAll);   // (the players come in chain order)
+  // (the players come in chain order; versus: chains inside each team)
+  if (sim.chain && sim.versus) {
+    const by = new Map();
+    for (const p of sim.players) by.set(p.team, [...(by.get(p.team) || []), p.id]);
+    sim.chains = [...by.values()].flatMap((ids) => chainGroups(ids, sim.chainAll));
+  } else if (sim.chain) sim.chains = chainGroups(sim.players.map((p) => p.id), sim.chainAll);
+  if (sim.versus) for (const p of sim.players) vsTeam(sim, p.team);
   return sim;
 }
 
@@ -527,6 +700,18 @@ function nextLevel(sim, events) {
   for (let i = 0; i < sim.players.length; i++) {
     placeAtSpawn(sim, sim.players[i], i);
   }
+  // chained: the rings of kitties that left come along to the start, beside the next kitty on their chain (not left
+  // where they were on the level before; versus: there to be picked up again)
+  if (sim.chain) for (const id of Object.keys(sim.anchors)) {
+    const an = sim.anchors[id], g = sim.chains.find((c) => c.includes(+id)), i = g ? g.indexOf(+id) : -1;
+    const near = (g && [...g.slice(0, i).reverse(), ...g.slice(i + 1)].map((o) => findPlayer(sim, o)).find(Boolean)) ||
+      (sim.versus && an.team != null && sim.players.find((q) => q.team === an.team)) || sim.players[0];
+    if (!near) continue;
+    const c = collideCircle(sim.levelData, near.x + 0.9, near.z, CFG.KITTY_RADIUS);
+    an.x = c.x; an.z = c.z; an.drag = false;
+    if (sim.versus && an.team != null) sim.vsLeft[id] = { x: an.x, z: an.z, team: an.team, color: an.color, by: 0 };
+    sim.chainRev = (sim.chainRev | 0) + 1;
+  }
   events.push({ type: 'levelStart', level: sim.level });
 }
 
@@ -637,9 +822,11 @@ function stepSim(sim, inputs, dt) {
       const p = players[i];
       const cx = p.x - ld.crown.x, cz = p.z - ld.crown.z;
       if (!p.alive || cx * cx + cz * cz >= cr * cr) continue;
+      if (sim.versus && (vsMates(sim, p).some((q) => !sim.enteredCenter.includes(q.id)) || Object.values(sim.vsLeft).some((s) => s.team === p.team))) continue;   // (versus: the whole team home first, anyone who left picked up)
       sim.crownTaken = true;
       sim.lastWinner = p.id;
       p.crowned = true; // keeps wearing a crown for the rest of the run
+      if (sim.versus) { vsTeam(sim, p.team).crowns++; for (const q of vsMates(sim, p)) { q.crowned = true; if (q !== p) q.finishes = (q.finishes || 0) + 1; } }   // (the team: one crown, everyone wears it)
       events.push({ type: 'crown', playerId: p.id });
       crownBy = p;
       break;
@@ -665,7 +852,7 @@ function stepSim(sim, inputs, dt) {
       let rescuer = null;
       for (let i = 0; i < players.length; i++) {
         const p = players[i];
-        if (!p.alive || p.inCenter || p === dead) continue;
+        if (!p.alive || p.inCenter || p === dead || (sim.versus && p.team !== dead.team)) continue;
         const dx = p.x - circ.x;
         const dz = p.z - circ.z;
         if (dx * dx + dz * dz < revR2) {
@@ -685,6 +872,7 @@ function stepSim(sim, inputs, dt) {
       dead.invuln = CFG.REVIVE_INVULN;   // a short grace period (it can't go down again, and be revived, at once)
       dead.freeTurn = true;   // on ice: its first steer picks the way it skates off (not the way it faced going down)
       rescuer.rescues++;
+      if (sim.versus) vsTeam(sim, rescuer.team).revives++;
       if ((sim.levelData.level || sim.level) === CFG.REVIVE_DOUBLE_LEVEL) rescuer.bonus = (rescuer.bonus || 0) + 1;   // (scores double, REVIVE_DOUBLE_LEVEL)
       sim.stats.rescues++;
       sim.circles.splice(c, 1);
@@ -697,18 +885,20 @@ function stepSim(sim, inputs, dt) {
   // any slot the activator is standing on ---
   const cps = ld.checkpoints || [];
   for (let c = 0; c < cps.length; c++) {
-    if (sim.state !== 'playing' || sim.checkpointsHit.indexOf(c) >= 0) continue;
+    if (sim.state !== 'playing' || (!sim.versus && sim.checkpointsHit.indexOf(c) >= 0)) continue;
     const cp = cps[c];
+    const hitBy = (p) => !sim.versus || !(sim.vsCp[p.team] || []).includes(c);   // (versus: each team its own)
     const h = (ld.safeSize || ld.corridorWidth) / 2 - CFG.WALL_THICKNESS / 2;
     // a broken (medic) checkpoint: only a kitty with cp.minRescues revives this run can repair it (an easy game: any kitty)
-    const by = players.find((p) => p.alive && !p.inCenter && Math.abs(p.x - cp.x) < h && Math.abs(p.z - cp.z) < h && (sim.easy || (p.rescues || 0) >= (cp.minRescues || 0)));
+    const by = players.find((p) => p.alive && !p.inCenter && hitBy(p) && Math.abs(p.x - cp.x) < h && Math.abs(p.z - cp.z) < h && (sim.easy || (p.rescues || 0) >= (cp.minRescues || 0)));
     if (!by) continue;
-    sim.checkpointsHit.push(c);
+    if (!sim.checkpointsHit.includes(c)) sim.checkpointsHit.push(c);
+    if (sim.versus) (sim.vsCp[by.team] ||= []).push(c);
     const revived = [], moved = [];
     let slot = 0;
     for (let i = 0; i < players.length; i++) {
       const p = players[i];
-      if (p.inCenter || p === by) continue;
+      if (p.inCenter || p === by || (sim.versus && p.team !== by.team)) continue;
       // the broken (medic) checkpoint: a kitty still alive that is already past it (in the run half, beyond the square in
       // the run direction) stays where it is; only the downed and those behind (skate half, hallway, the square) gather
       if (cp.medic && p.alive && (ld.iceZMax == null || p.z > ld.iceZMax) && ((p.x - cp.x) * Math.cos(cp.heading) + (p.z - cp.z) * Math.sin(cp.heading)) > h) continue;
@@ -732,6 +922,7 @@ function stepSim(sim, inputs, dt) {
     for (const id of revived) {
       const q = findPlayer(sim, id);
       by.rescues++;
+      if (sim.versus) vsTeam(sim, by.team).revives++;
       if ((ld.level || sim.level) === CFG.REVIVE_DOUBLE_LEVEL) by.bonus = (by.bonus || 0) + 1;
       sim.stats.rescues++;
       events.push({ type: 'revive', playerId: id, by: by.id, x: q.x, z: q.z, cp: true });
@@ -840,6 +1031,7 @@ function stepSim(sim, inputs, dt) {
         p.invuln = 0;
         p.deaths++;
         chainBootsLost(sim, p);   // (chained: the chain loses half)
+        if (sim.versus) vsTeam(sim, p.team).deaths++;
         p.speedMult = 1; // speed boots are lost when caught
         sim.stats.deaths++;
         sim.circles.push({ playerId: p.id, x: p.x, z: p.z, t: 0 });
@@ -853,6 +1045,45 @@ function stepSim(sim, inputs, dt) {
     const circ = sim.circles[c];
     if (circ.t > 0 || !justDied(events, circ.playerId)) circ.t += dt;
   }
+
+  // versus: a teammate touching where one of them left picks it up and carries it (it goes where the carrier goes);
+  // carried into the goal it's done (the team can take the crown without it); the carrier caught drops it there
+  if (sim.versus && sim.state === 'playing') for (const id of Object.keys(sim.vsLeft)) {
+    const s = sim.vsLeft[id];
+    if (!s) continue;
+    if (s.by) {
+      const c = findPlayer(sim, s.by), an = sim.anchors[id];
+      if (an && an.drag) { s.x = an.x; s.z = an.z; } else if (c) { s.x = c.x; s.z = c.z; }
+      if (!c || !c.alive) { s.by = 0; if (an && an.drag) { an.drag = false; sim.chainRev = (sim.chainRev | 0) + 1; } sim.vsRev = (sim.vsRev | 0) + 1; continue; }
+      if (c.inCenter) {
+        delete sim.vsLeft[id];
+        if (an) chainRelease(sim, +id);   // (a dragged body home: its chain lets go)
+        sim.vsRev = (sim.vsRev | 0) + 1;
+        events.push({ type: 'vsHome', id: +id, by: c.id, team: s.team });
+      }
+      continue;
+    }
+    // (chained: a ring still holding kitties of its chain in the game is theirs to pick up, a teammate on another
+    // chain can't free them by it; a ring of a chain with nobody of it left: any teammate)
+    const g = sim.anchors[id] ? sim.chains.find((c) => c.includes(+id)) : null;
+    const held = g && g.some((o) => findPlayer(sim, o));
+    const q = players.find((o) => o.alive && o.team === s.team && (!held || g.includes(o.id)) && Math.hypot(o.x - s.x, o.z - s.z) < CHAIN_TOUCH);
+    if (!q) continue;
+    s.by = q.id;
+    // (chained: its chain lets go, it's carried now; unless the carrier would be left with no kitty of its chain in the
+    // game: then it stays on the chain, a body dragged behind the carrier, slowing it like a kitty standing still)
+    if (sim.anchors[id]) {
+      if (held && !g.some((o) => o !== q.id && findPlayer(sim, o))) {
+        // (one body at most: the other rings on its chain come off it, their spots left to be carried as usual)
+        for (const o of g.filter((o) => o !== +id && o !== q.id && sim.anchors[o])) chainRelease(sim, o);
+        sim.anchors[id].drag = true;
+      } else chainRelease(sim, +id);
+      sim.chainRev = (sim.chainRev | 0) + 1;
+    }
+    sim.vsRev = (sim.vsRev | 0) + 1;
+    events.push({ type: 'vsPickup', id: +id, by: q.id, team: s.team, x: s.x, z: s.z });
+  }
+  vsTrack(sim);   // (versus: the teams' distance, before the level can end this tick)
 
   // --- state machine ---
   let alive = 0;
@@ -947,10 +1178,11 @@ function findPlayer(sim, id) {
 }
 
 // Join mid-game: spawns alive at a spawn point with spawn invulnerability.
-function addPlayer(sim, { id, name, color }) {
+function addPlayer(sim, { id, name, color, team }) {
   const existing = findPlayer(sim, id);
   if (existing) return existing;
-  const p = makePlayer({ id, name, color });
+  const p = makePlayer({ id, name, color, team });
+  if (sim.versus) vsTeam(sim, p.team);
   placeAtSpawn(sim, p, sim.players.length);
   sim.players.push(p);
   return p;   // (chained: the server puts it on a chain, chainRejoin / chainJoin)
@@ -986,4 +1218,4 @@ function loadLevel(sim, level) {
   makeLevel(sim, level);
 }
 
-export { GAME_MODES, CHAIN_SOFT, CHAIN_LEN, chainGroups, chainLinks, chainJoin, chainLeave, chainRejoin, chainRelease, pregenParams, createSim, stepSim, addPlayer, removePlayer, predictPlayer, loadLevel };
+export { vsScore, vsCmp, vsLeave, vsReturn, loneOf, groupJoin, mergeReturn, VS_MAP, VS_CROWN, GAME_MODES, CHAIN_SOFT, CHAIN_LEN, chainGroups, chainLinks, chainJoin, chainLeave, chainRejoin, chainRelease, pregenParams, createSim, stepSim, addPlayer, removePlayer, predictPlayer, loadLevel };

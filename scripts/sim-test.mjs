@@ -910,6 +910,10 @@ const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process
       lc.record({ acct: 'ch-2', name: 'C2', color: 2 }, { local: false, easy: false, mode: 'run', level: 2, time: 70, team: 2, run: 'tm2222' });
       const qb = (chain) => lc.query({ acct: 'ch-1' }, { board: { local: false, easy: false, mode: 'run', level: 2, team: true, chain }, scope: 'all' }).rows.map((r) => r.name).join();
       ok(qb(true) === 'C1' && qb(false) === 'C2', 'level boards: chained times on their own board, not with the other team times');
+      // a versus game's clear: one slot, marked, its kitties in the order they came (the team with the most points first)
+      for (const [order, n] of ['V3', 'V1', 'V2'].entries()) lc.record({ acct: 'vs-' + n, name: n, color: 1 }, { local: false, easy: false, mode: 'run', level: 4, time: 70, team: 3, run: 'vsrun1', vs: true, order, tm: order < 2 ? 0 : 1 });
+      const vr = lc.query({ acct: 'vs-V1' }, { board: { local: false, easy: false, mode: 'run', level: 4, team: true }, scope: 'all' }).rows[0];
+      ok(vr && vr.vs === 1 && vr.members.map((m) => m.name + m.tm).join() === 'V30,V10,V21', 'level boards: a versus clear is marked, its kitties named best team first (each with the place of its team)');
       // an old team time (no run: from before runs kept their players) keeps a player who gets a faster time since, greyed
       const ev3 = { local: false, easy: false, mode: 'run', level: 3, team: 2 };
       lc.record({ acct: 'old-1', name: 'O1', color: 1 }, { ...ev3, time: 80 });
@@ -966,6 +970,171 @@ const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process
       for (let t = 0; t < 30 && !b1.alive; t++) stepSim(sb, {}, 1 / 60);
       ok(shared && half && b1.alive && Math.round((b1.speedMult - 1) * 100) === 5, 'chained: boots shared on a chain (not another), one caught costs half (3 pairs: 1 left), revived it gets the chain boots');
     }
+    // versus: only your own team revives you; a team takes the crown once all of it has been in the goal (one crown for
+    // the team, everyone wears it); its points: the slowest kitty's distance (the goal: a whole map) and the crown
+    {
+      const { createSim, stepSim, vsScore } = await import('../public/js/shared/sim.js');
+      const T = 1 / 60, s = createSim({ seed: 3, mode: 'run', versus: true, players: [{ id: 1, name: 'a', team: 1 }, { id: 2, name: 'b', team: 1 }, { id: 3, name: 'c', team: 2 }] });
+      stepSim(s, {}, T);
+      const [a, b, c] = s.players;
+      for (const p of s.players) p.invuln = 99;
+      b.alive = false; s.circles.push({ playerId: 2, x: b.x, z: b.z, t: 5 });
+      c.x = b.x; c.z = b.z; a.x = 30; a.z = 30;
+      for (let i = 0; i < 5; i++) stepSim(s, {}, T);
+      const noCross = !b.alive;
+      a.x = b.x; a.z = b.z; c.x = 30;
+      for (let i = 0; i < 5; i++) stepSim(s, {}, T);
+      const own = b.alive && s.teams[1].revives === 1 && s.teams[2].revives === 0;
+      const cr = s.levelData.crown;
+      a.x = cr.x; a.z = cr.z;
+      for (let i = 0; i < 5; i++) stepSim(s, {}, T);
+      const blocked = !s.crownTaken;
+      b.x = 0.5; b.z = 0.5;
+      for (let i = 0; i < 5 && !s.crownTaken; i++) { a.x = cr.x; a.z = cr.z; stepSim(s, {}, T); }
+      ok(noCross && own && blocked && s.crownTaken && s.state === 'levelclear' && s.teams[1].crowns === 1 && b.crowned && b.finishes === 1 && vsScore(s.teams[1]) === 25 && vsScore(s.teams[2]) < 20,
+        'versus: only your team revives you; the crown once the whole team was in the goal (one crown, everyone wears it); points: the slowest kitty\'s way and the crown');
+      // leaving: a catch for the team and a spot where it was; the crown waits until a teammate has touched it; back, it
+      // is at the teammate furthest behind
+      const { vsLeave, vsReturn, addPlayer, removePlayer } = await import('../public/js/shared/sim.js');
+      const v = createSim({ seed: 4, mode: 'run', versus: true, players: [{ id: 1, name: 'a', team: 1 }, { id: 2, name: 'b', team: 1 }, { id: 3, name: 'c', team: 2 }] });
+      stepSim(v, {}, T);
+      const [va, vb] = v.players;
+      for (const p of v.players) p.invuln = 99;
+      vb.x = va.x + 6; vb.z = va.z; const bx = vb.x;
+      vsLeave(v, 2); removePlayer(v, 2);
+      const left = v.teams[1].deaths === 1 && !!v.vsLeft[2];
+      const vc = v.levelData.crown;
+      v.enteredCenter.push(1); va.x = vc.x; va.z = vc.z;
+      for (let i = 0; i < 3; i++) stepSim(v, {}, T);
+      const waits = !v.crownTaken;
+      va.x = bx; va.z = vb.z; stepSim(v, {}, T);
+      const picked = v.vsLeft[2] && v.vsLeft[2].by === 1;
+      va.x = bx + 2; stepSim(v, {}, T);
+      const stillHere = v.vsLeft[2] && v.vsLeft[2].by === 1 && v.vsLeft[2].x === va.x && !v.crownTaken;   // (carried along, not home yet)
+      for (let i = 0; i < 3 && !v.crownTaken; i++) { va.x = vc.x; va.z = vc.z; stepSim(v, {}, T); }
+      const home = !v.vsLeft[2] && v.crownTaken;
+      const back = addPlayer(v, { id: 9, name: 'b', color: 0, team: 1 }); vsReturn(v, 2, back);
+      ok(left && waits && picked && stillHere && home && back.x === va.x && back.z === va.z, 'versus: leaving costs a catch and leaves a spot a teammate picks up and carries into the goal before the crown; back, it is at its teammate furthest behind');
+      // back while being carried: it is where its carrier is
+      const u = createSim({ seed: 4, mode: 'run', versus: true, players: [{ id: 1, name: 'a', team: 1 }, { id: 2, name: 'b', team: 1 }, { id: 3, name: 'c', team: 1 }, { id: 4, name: 'd', team: 2 }] });
+      stepSim(u, {}, T);
+      const [ua, ub, uc] = u.players;
+      for (const p of u.players) p.invuln = 99;
+      ub.x = ua.x + 6; uc.x = ua.x - 2;
+      vsLeave(u, 2); removePlayer(u, 2);
+      ua.x = ub.x; ua.z = ub.z; stepSim(u, {}, T); ua.x += 3; stepSim(u, {}, T);
+      const ub2 = addPlayer(u, { id: 8, name: 'b', color: 0, team: 1 }); vsReturn(u, 2, ub2);
+      ok(ub2.x === ua.x && ub2.z === ua.z && !u.vsLeft[2], 'versus: back while being carried, it is where its carrier is');
+      // a checkpoint gathers only the team of the kitty that reached it (the others can still reach it for theirs), and the
+      // gathered teammates' way counts for the team's points (unlike the score's distance elsewhere)
+      const q = createSim({ seed: 7, mode: 'mixed', versus: true, players: [{ id: 1, name: 'a', team: 1 }, { id: 2, name: 'b', team: 1 }, { id: 3, name: 'c', team: 2 }] });
+      stepSim(q, {}, T);
+      const qcp = q.levelData.checkpoints.find((x) => !x.medic), [qa, qb, qc] = q.players;
+      for (const p of q.players) p.invuln = 99;
+      qa.x = qcp.x; qa.z = qcp.z; stepSim(q, {}, T); stepSim(q, {}, T);
+      const gathered = Math.hypot(qb.x - qcp.x, qb.z - qcp.z) < 6 && Math.hypot(qc.x - qcp.x, qc.z - qcp.z) > 6 && q.teams[1].cur > 0.2;
+      qc.x = qcp.x; qc.z = qcp.z; stepSim(q, {}, T);
+      ok(gathered && q.vsCp[2] && q.vsCp[2].length === 1, 'versus: a checkpoint gathers only its own team (each team reaches it for itself); the gathered teammates\' way counts for the team\'s points');
+      // chained versus: one left alone on its team's chain picks the other up and drags it behind on the chain (no running
+      // about unchained), home in the goal it's done and the chain lets go
+      const { chainLeave } = await import('../public/js/shared/sim.js');
+      const w = createSim({ seed: 4, mode: 'run', versus: true, chain: true, players: [{ id: 1, name: 'a', team: 1 }, { id: 2, name: 'b', team: 1 }, { id: 3, name: 'c', team: 2 }] });
+      stepSim(w, {}, T);
+      const [wa, wb] = w.players;
+      chainLeave(w, 2); vsLeave(w, 2); removePlayer(w, 2);
+      const held = !!w.anchors[2];
+      wa.x = wb.x; wa.z = wb.z; stepSim(w, {}, T);
+      const dragged = !!(w.anchors[2] && w.anchors[2].drag) && w.vsLeft[2] && w.vsLeft[2].by === 1 && JSON.stringify(w.chains) === '[[1,2],[3]]';
+      const ax0 = w.anchors[2].x, az0 = w.anchors[2].z, dl = Math.hypot(wa.x, wa.z), dir = { x: -wa.x / dl, z: -wa.z / dl };
+      for (let i = 0; i < 150; i++) { wa.invuln = 99; stepSim(w, { 1: dir }, T); }   // (running toward the middle)
+      const pulled = Math.hypot(w.anchors[2].x - ax0, w.anchors[2].z - az0) > 0.5;
+      wa.x = 1; wa.z = 0.5; stepSim(w, {}, T); stepSim(w, {}, T);
+      ok(held && dragged && pulled && !w.vsLeft[2] && !w.anchors[2] && JSON.stringify(w.chains) === '[[1],[3]]',
+        'chained versus: one left alone on its chain picks the other up and drags it on the chain; home in the goal, the chain lets go');
+      // ...one leaving off the end of a chain keeps it held too (until its team picks it up: then the chain lets go and
+      // it's carried); back while carried, it's at its carrier
+      const x = createSim({ seed: 4, mode: 'run', versus: true, chain: 'all', players: [{ id: 1, name: 'a', team: 1 }, { id: 2, name: 'b', team: 1 }, { id: 3, name: 'c', team: 1 }, { id: 4, name: 'd', team: 2 }] });
+      stepSim(x, {}, T);
+      const [xa, , xc] = x.players;
+      for (const p of x.players) p.invuln = 99;
+      chainLeave(x, 3); vsLeave(x, 3); removePlayer(x, 3);
+      const endHeld = !!x.anchors[3];
+      xa.x = xc.x; xa.z = xc.z; stepSim(x, {}, T);
+      const pickedUp = !x.anchors[3] && x.vsLeft[3] && x.vsLeft[3].by === 1;
+      const xc2 = addPlayer(x, { id: 7, name: 'c', color: 0, team: 1 }), carried = vsReturn(x, 3, xc2);
+      ok(endHeld && pickedUp && carried === true && xc2.x === xa.x && xc2.z === xa.z && JSON.stringify(x.chains) === '[[1,7,2],[4]]',
+        'chained versus: one leaving off the end of a chain is held there until picked up (then the chain lets go); back while carried, at its carrier and chained to it');
+      // joining up: two on their own (their partners left) join up into the team with more points; one partner back: a
+      // chain of three; both back: two pairs again, the team that wasn't kept with its points plus what was scored since
+      const { loneOf, groupJoin, mergeReturn } = await import('../public/js/shared/sim.js');
+      const j = createSim({ seed: 4, mode: 'run', versus: true, chain: true, players: [{ id: 1, name: 'a', team: 1 }, { id: 2, name: 'b', team: 1 }, { id: 3, name: 'c', team: 2 }, { id: 4, name: 'd', team: 2 }] });
+      stepSim(j, {}, T);
+      j.teams[1].crowns = 2;
+      for (const id of [2, 4]) { chainLeave(j, id); vsLeave(j, id); removePlayer(j, id); }
+      const lone = !!loneOf(j, 1) && !!loneOf(j, 3);
+      const joined = groupJoin(j, 3, 1) && JSON.stringify(j.chains) === '[[1,3]]' && j.players.every((p) => p.team === 1) && !Object.keys(j.anchors).length;
+      j.teams[1].crowns++;   // (scored together)
+      const jb = addPlayer(j, { id: 9, name: 'b', team: 1 }), three = mergeReturn(j, 2, jb) && JSON.stringify(j.chains) === '[[1,9,3]]';
+      const jd = addPlayer(j, { id: 10, name: 'd', team: 2 }), split = mergeReturn(j, 4, jd) && JSON.stringify(j.chains) === '[[1,9],[3,10]]'
+        && [1, 9, 3, 10].map((id) => j.players.find((p) => p.id === id).team).join() === '1,1,2,2' && j.teams[2].crowns === 1 && j.teams[1].crowns === 3;
+      ok(lone && joined && three && split, 'chained versus: two on their own join up (the team with more points kept); one partner back makes three, both back split into two pairs (points scored together go to both)');
+      // two of three leaving: the one left drags one body only (the other ring goes); down on its own, joining another
+      // group brings it back up
+      const o = createSim({ seed: 4, mode: 'run', versus: true, chain: 'all', players: [{ id: 1, name: 'a', team: 1 }, { id: 2, name: 'b', team: 1 }, { id: 3, name: 'c', team: 1 }, { id: 4, name: 'd', team: 2 }, { id: 5, name: 'e', team: 2 }] });
+      stepSim(o, {}, T);
+      const [oa, ob] = o.players;
+      for (const id of [2, 3]) { chainLeave(o, id); vsLeave(o, id); removePlayer(o, id); }
+      oa.x = ob.x; oa.z = ob.z; oa.invuln = 99; stepSim(o, {}, T);
+      const oneBody = Object.keys(o.anchors).join() === '2' && o.anchors[2].drag && o.vsLeft[3] && !o.vsLeft[3].by && JSON.stringify(o.chains) === '[[1,2],[4,5]]';
+      oa.alive = false; o.circles.push({ playerId: 1, x: oa.x, z: oa.z, t: 0 });
+      const upAgain = groupJoin(o, 1, 4) && oa.alive && !o.circles.some((c) => c.playerId === 1) && oa.team === 2 && JSON.stringify(o.chains) === '[[4,5,1]]';
+      ok(oneBody && upAgain, 'chained versus: two of three leaving, the one left drags one body only (the other comes off the chain, still to be carried); down on its own, joining another team brings it back up');
+      // a new level: a ring comes along to the start, beside its partner, to be picked up there again
+      const lv = createSim({ seed: 4, mode: 'run', versus: true, chain: true, players: [{ id: 1, name: 'a', team: 1 }, { id: 2, name: 'b', team: 1 }, { id: 3, name: 'c', team: 2 }, { id: 4, name: 'e', team: 2 }] });
+      stepSim(lv, {}, T);
+      lv.players[1].x += 5; chainLeave(lv, 2); vsLeave(lv, 2); removePlayer(lv, 2);
+      lv.state = 'levelclear'; lv.stateTimer = 0.001; stepSim(lv, {}, T); stepSim(lv, {}, T);
+      ok(lv.level === 2 && Math.hypot(lv.anchors[2].x - lv.players[0].x, lv.anchors[2].z - lv.players[0].z) < 1.5 && !!lv.vsLeft[2], 'chained versus: at a new level the ring of one that left comes along beside its partner, to be picked up there');
+      // pairs: a teammate on another chain can't pick up a ring still holding a kitty (it would run unchained); its partner
+      // can. A whole pair gone: any teammate picks a ring up, and at a new level the rings come to the start by a teammate
+      const pr = createSim({ seed: 4, mode: 'run', versus: true, chain: true, players: [1, 2, 3, 4].map((id) => ({ id, name: 'k' + id, team: 1 })).concat([{ id: 5, name: 'e', team: 2 }, { id: 6, name: 'f', team: 2 }]) });
+      stepSim(pr, {}, T);
+      for (const p of pr.players) p.invuln = 99;
+      const pairs = JSON.stringify(pr.chains);
+      const [p1, p2, p3] = pr.players;
+      p2.x = p1.x + 3; chainLeave(pr, 2); vsLeave(pr, 2); removePlayer(pr, 2);
+      p3.x = pr.anchors[2].x; p3.z = pr.anchors[2].z; stepSim(pr, {}, T);
+      const notOther = !!pr.anchors[2] && !pr.vsLeft[2].by && pr.chains.some((c) => c.join() === '1,2');
+      p1.x = pr.anchors[2].x; p1.z = pr.anchors[2].z; stepSim(pr, {}, T);
+      const partner = pr.vsLeft[2] && pr.vsLeft[2].by === 1 && pr.anchors[2] && pr.anchors[2].drag;
+      ok(pairs === '[[1,2],[3,4],[5,6]]' && notOther && partner, 'chained versus: a teammate on another chain cannot pick up a ring still holding a kitty; its partner can (and drags it)');
+      const gp = createSim({ seed: 4, mode: 'run', versus: true, chain: true, players: [1, 2, 3, 4].map((id) => ({ id, name: 'k' + id, team: 1 })).concat([{ id: 5, name: 'e', team: 2 }, { id: 6, name: 'f', team: 2 }]) });
+      stepSim(gp, {}, T);
+      for (const p of gp.players) p.invuln = 99;
+      gp.players[2].x += 4;
+      for (const id of [3, 4]) { chainLeave(gp, id); vsLeave(gp, id); removePlayer(gp, id); }
+      gp.state = 'levelclear'; gp.stateTimer = 0.001; stepSim(gp, {}, T); stepSim(gp, {}, T);
+      const g1 = gp.players[0], near = [3, 4].every((id) => gp.vsLeft[id] && Math.hypot(gp.vsLeft[id].x - g1.x, gp.vsLeft[id].z - g1.z) < 4);
+      ok(gp.level === 2 && near && [3, 4].some((id) => gp.vsLeft[id].by && !gp.anchors[id]),
+        'chained versus: a whole pair gone, at a new level their rings come to the start by a teammate; any teammate picks one up (carried, not dragged)');
+      // back in time and not carried: where it left (not ahead at a teammate); until then its team is held back at how
+      // far it had got; no pickups while the level is over
+      const nr = createSim({ seed: 4, mode: 'run', versus: true, players: [{ id: 1, name: 'a', team: 1 }, { id: 2, name: 'b', team: 1 }, { id: 3, name: 'c', team: 2 }] });
+      stepSim(nr, {}, T);
+      for (const p of nr.players) p.invuln = 99;
+      const [na, nb] = nr.players;
+      nb.x = na.x + 4; stepSim(nr, {}, T);
+      const sx = nb.x, sz = nb.z;
+      vsLeave(nr, 2); removePlayer(nr, 2);
+      const sf = nr.vsLeft[2].f;
+      nr.players[0].runBest = 0.9; stepSim(nr, {}, T);
+      const heldBack = sf != null && nr.teams[1].cur <= sf + 1e-9;
+      nr.state = 'levelclear'; nr.stateTimer = 99; na.x = sx; na.z = sz; stepSim(nr, {}, T);
+      const noPick = !nr.vsLeft[2].by;
+      nr.state = 'playing'; na.x = sx - 8;
+      const nb2 = addPlayer(nr, { id: 9, name: 'b', color: 0, team: 1 }), was = vsReturn(nr, 2, nb2);
+      ok(heldBack && noPick && was === false && nb2.x === sx && nb2.z === sz && !nr.vsLeft[2], 'versus: one that left holds its team back at how far it got; no pickups while the level is over; back, not carried, it is where it left');
+    }
     // level boards: a team's time once, with everyone in it (one run); another team with the same time stays its own slot
     {
       const { createLevelBoards } = await import('../server/levelboards.js');
@@ -980,14 +1149,14 @@ const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process
         && q.me.rank === 1 && q.n === 7,
         'level boards: a team time takes one slot with everyone in it; another team with the same time is its own slot');
       // one of the 4 then sets a faster time with someone else: the new run shows them; the old one keeps all 4, that one
-      // greyed and last
+      // greyed in its place
       lb.record(P(2), { local: false, easy: false, mode: 'run', level: 3, time: 80, team: 2, run: 'ddd444' });
       lb.record(P(8), { local: false, easy: false, mode: 'run', level: 3, time: 80, team: 2, run: 'ddd444' });
       const q2 = lb.query(P(2), { board: { local: false, easy: false, mode: 'run', level: 3, team: true }, scope: 'all' });
       const old4 = q2.rows.find((r) => r.time === 90 && r.team === 4);
       ok(q2.rows[0].time === 80 && q2.rows[0].members.map((m) => m.name).join() === 'K2,K8' && q2.rows[0].me
-        && old4 && old4.members.map((m) => m.name + (m.gone ? '-' : '')).join() === 'K1,K3,K4,K2-' && !old4.me && q2.me.rank === 1,
-        'level boards: a player with a faster time since stays in the old team slot, greyed and last (still the best of the others)');
+        && old4 && old4.members.map((m) => m.name + (m.gone ? '-' : '')).join() === 'K1,K2-,K3,K4' && !old4.me && q2.me.rank === 1,
+        'level boards: a player with a faster time since stays in the old team slot, greyed in its place (still the best of the others)');
       // a team the board can't name everyone of (a run from before runs kept their players): the rest as a count
       lb.record(P(9), { local: false, easy: false, mode: 'run', level: 3, time: 99, team: 3 });
       const q3 = lb.query(P(9), { board: { local: false, easy: false, mode: 'run', level: 3, team: true }, scope: 'all' }).rows.find((r) => r.time === 99);
@@ -1030,6 +1199,12 @@ const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process
       const badc = st.record({ cid: 'hellstat01', ev: 'run_start', kind: 'coop', mode: 'mixed', chain: 1 });
       const sc = st.summary(0);
       ok(sc.chain.games === 2 && sc.chain.online === 1 && sc.modes.run === 1 && sc.kinds.coop === 1 && !badc, 'stats page: chained games counted (online ones too), and in their mode as usual');
+      // versus games: counted (and in their kind and mode as usual); its plays key has versus last
+      const vsBefore = st.summary(0).modes.run;
+      st.record({ cid: 'hellstat01', ev: 'run_start', kind: 'online', mode: 'run', versus: true });
+      const badv = st.record({ cid: 'hellstat01', ev: 'run_start', kind: 'online', mode: 'run', versus: 1 });
+      const sv = st.summary(0);
+      ok(sv.versus.games === 1 && sv.modes.run === vsBefore + 1 && !badv, 'stats page: versus games counted, and in their mode as usual');
       st.record({ cid: 'hellstat01', ev: 'run_start', kind: 'online', mode: 'ice', chain: 'all', easy: true });
       const pl = Object.values(st.summary(0).plays)[0] || {};
       ok(pl['online:ice:hell:normal:off'] === 1 && pl['solo:ice:hell:normal:off'] === 1 && pl['coop:mixed:game:normal:pairs'] === 1 && pl['online:ice:game:easy:everyone'] === 1 && st.summary(0).chain.games === 3,

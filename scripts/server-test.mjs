@@ -107,6 +107,130 @@ async function victory() {
     for (const x of [a, b, c, d2, old]) x.ws.close();
     await sleep(3500);   // (the connection rate limit: these six back, CONN_RATE 2/s)
   }
+  // ---- versus lobbies: everyone on a team of their own; JOIN asks, someone in the team accepts (or declines); no start
+  // with one team; the start message and snapshots carry the teams
+  {
+    const a = bot(NEW), b = bot(NEW), c = bot(NEW);
+    await Promise.all([a.ready, b.ready, c.ready]);
+    a.send({ t: 'create', name: 'Ann', mode: 'run', versus: true }); await sleep(150);
+    const code = a.last.room.code;
+    b.send({ t: 'join', code, name: 'Bob' }); await sleep(120);
+    c.send({ t: 'join', code, name: 'Cat' }); await sleep(150);
+    const me = (x) => x.last.room.you, team = (x) => a.last.room.mt[me(x)], tA = team(a);
+    b.send({ t: 'team', act: 'join', id: tA }); c.send({ t: 'team', act: 'join', id: tA }); await sleep(200);
+    const asked = team(b) !== tA && JSON.stringify(a.last.room.teams.find((t) => t.id === tA).req) === JSON.stringify([me(b), me(c)]);
+    a.send({ t: 'team', act: 'accept', id: me(b) }); a.send({ t: 'team', act: 'decline', id: me(c) }); await sleep(200);
+    ok(a.last.room.versus && asked && team(b) === tA && team(c) !== tA && !a.last.room.teams.find((t) => t.id === tA).req && a.last.room.teams.length === 2,
+      'versus lobby: JOIN asks to join a team; accepted you are in, declined you stay on your own');
+    b.send({ t: 'team', act: 'ready' }); await sleep(150);
+    const rdy = c.last.room.teams.find((t) => t.id === tA).ready === true;
+    c.send({ t: 'team', act: 'join', id: tA }); await sleep(100); b.send({ t: 'team', act: 'accept', id: me(c) }); await sleep(150);
+    ok(rdy && team(c) === tA && !c.last.room.teams.find((t) => t.id === tA).ready, 'versus lobby: a team marked ready shows to everyone; someone joining it takes that back');
+    c.send({ t: 'team', act: 'new' }); await sleep(150);
+    a.send({ t: 'start' }); await sleep(300);
+    const st = c.last.start, vs = st && st.vs;
+    ok(st && vs.length === 2 && st.players.find((p) => p.id === me(b)).team === tA, 'versus game: the start message has the teams and who is in which');
+    for (const x of [a, b, c]) x.ws.close();
+    await sleep(2000);   // (the connection rate limit)
+  }
+  // ---- versus matchmaking: two searching lobbies (same mode) come together, teams and names kept; a searching lobby
+  // with no other joins a searching game in progress as a team of its own
+  {
+    const a = bot(NEW), b = bot(NEW), c = bot(NEW), d = bot(NEW);
+    await Promise.all([a.ready, b.ready, c.ready, d.ready]);
+    a.send({ t: 'create', name: 'Ann', mode: 'ice', versus: true }); await sleep(150);
+    b.send({ t: 'join', code: a.last.room.code, name: 'Bob' }); await sleep(150);
+    b.send({ t: 'team', act: 'join', id: a.last.room.mt[a.last.room.you] }); await sleep(100);
+    a.send({ t: 'team', act: 'accept', id: b.last.room.you }); a.send({ t: 'team', act: 'name', name: 'Ice Cats' }); await sleep(150);
+    c.send({ t: 'create', name: 'Cat', mode: 'ice', versus: true }); await sleep(150);
+    a.send({ t: 'team', act: 'search' }); c.send({ t: 'team', act: 'search' }); await sleep(1800);
+    const R = a.last.room;
+    ok(c.last.room.code === R.code && R.members.length === 3 && R.teams.length === 2 && R.teams.some((t) => t.name === 'Ice Cats') && R.mt[b.last.room.you] === R.mt[R.you] && R.search,
+      'versus matchmaking: searching lobbies come together (the smaller moves in), teams and names kept');
+    a.send({ t: 'start' }); await sleep(400);
+    d.send({ t: 'create', name: 'Dot', mode: 'ice', versus: true }); await sleep(150);
+    d.send({ t: 'team', act: 'search' }); await sleep(1800);
+    const ds = d.last.start;
+    ok(ds && d.last.room.code === R.code && ds.players.find((p) => p.id === d.last.room.you).team !== ds.players.find((p) => p.id === R.you).team && ds.vs.length === 3,
+      'versus matchmaking: a searching lobby joins a searching game in progress, as a team of its own');
+    // one leaving and coming back in a new tab (same browser: pid) is on its team again
+    const PIDB = 'versusbrowserpid000000001';
+    const e = bot({ ...NEW, tok: 'vs-tab-old-0001', pid: PIDB }); await e.ready;
+    e.send({ t: 'join', code: R.code, name: 'Eve' }); await sleep(300);
+    const eTeam = e.last.start && e.last.start.players.find((p) => p.id === e.last.room.you).team;
+    e.ws.close(); await sleep(300);
+    const e2 = bot({ ...NEW, tok: 'vs-tab-new-0001', pid: PIDB }); await e2.ready;
+    e2.send({ t: 'join', code: R.code, name: 'Eve' }); await sleep(300);
+    const e2Team = e2.last.start && e2.last.start.players.find((p) => p.id === e2.last.room.you).team;
+    ok(eTeam && e2Team === eTeam, 'versus game: one leaving and coming back in a new tab (the same browser) is on its team again');
+    // any mode: a Skate only lobby searching in any mode goes into a Run only lobby searching (and plays Run only); one
+    // searching in its own mode only stays apart from another mode
+    const f = bot(NEW), g = bot(NEW);
+    await Promise.all([f.ready, g.ready]);
+    f.send({ t: 'create', name: 'Fay', mode: 'run', versus: true }); await sleep(150);
+    g.send({ t: 'create', name: 'Gus', mode: 'mixed', versus: true }); await sleep(150);
+    f.send({ t: 'team', act: 'search' }); g.send({ t: 'team', act: 'search' }); await sleep(1800);
+    const apart = f.last.room.code !== g.last.room.code;
+    g.send({ t: 'team', act: 'any' }); await sleep(1800);   // (the any mode switch, while searching)
+    ok(apart && g.last.room.code === f.last.room.code && g.last.room.mode === 'run' && f.last.room.members.length === 2,
+      'versus matchmaking: searching in any mode joins another mode\'s lobby (and plays its mode); in its own mode only it stays apart');
+    f.ws.close(); g.ws.close();
+    // two in a Run + Skate lobby searching in any mode, one in Run only searching its own mode: the one's pick is kept
+    // (the two move in and play Run only); then both in any mode, the bigger group's mode is played
+    const j1 = bot(NEW), j2 = bot(NEW), k1 = bot(NEW);
+    await Promise.all([j1.ready, j2.ready, k1.ready]);
+    j1.send({ t: 'create', name: 'Jo', mode: 'mixed', versus: true }); await sleep(150);
+    j2.send({ t: 'join', code: j1.last.room.code, name: 'Jay' }); await sleep(150);
+    k1.send({ t: 'create', name: 'Kit', mode: 'run', versus: true }); await sleep(150);
+    j1.send({ t: 'team', act: 'any' }); j1.send({ t: 'team', act: 'search' }); k1.send({ t: 'team', act: 'search' }); await sleep(1800);
+    ok(j1.last.room.code === k1.last.room.code && j1.last.room.mode === 'run' && k1.last.room.members.length === 3,
+      'versus matchmaking: a group searching in its own mode keeps it, the one searching in any mode moves in (even when bigger)');
+    for (const x of [j1, j2, k1]) x.ws.close();
+    await sleep(1500);
+    const m1 = bot(NEW), m2 = bot(NEW), n1 = bot(NEW);
+    await Promise.all([m1.ready, m2.ready, n1.ready]);
+    m1.send({ t: 'create', name: 'Max', mode: 'mixed', versus: true }); await sleep(150);
+    m2.send({ t: 'join', code: m1.last.room.code, name: 'Mo' }); await sleep(150);
+    n1.send({ t: 'create', name: 'Ned', mode: 'run', versus: true }); await sleep(150);
+    m1.send({ t: 'team', act: 'any' }); n1.send({ t: 'team', act: 'any' }); m1.send({ t: 'team', act: 'search' }); n1.send({ t: 'team', act: 'search' }); await sleep(1800);
+    ok(n1.last.room.code === m1.last.room.code && n1.last.room.mode === 'mixed', 'versus matchmaking: both in any mode, the bigger group keeps its mode');
+    for (const x of [m1, m2, n1]) x.ws.close();
+    await sleep(1500);
+    // chained versus: no start while a team has a kitty on its own (it would have no chain)
+    const p1 = bot(NEW), p2 = bot(NEW);
+    await Promise.all([p1.ready, p2.ready]);
+    p1.send({ t: 'create', name: 'Pip', mode: 'run', versus: true, chain: true }); await sleep(150);
+    p2.send({ t: 'join', code: p1.last.room.code, name: 'Pat' }); await sleep(150);
+    p1.send({ t: 'start' }); await sleep(250);
+    ok(p1.last.room.phase === 'lobby' && p1.last.error && /Chained versus/.test(p1.last.error.msg), 'chained versus lobby: no start while a team has only one kitty');
+    for (const x of [p1, p2]) x.ws.close();
+    await sleep(1500);
+    // finding players in any lobby: two that aren't versus come together; a versus one stays apart from them; the host
+    // turns versus on in the lobby (everyone a team of their own) and off again
+    const q1 = bot(NEW), q2 = bot(NEW), q3 = bot(NEW);
+    await Promise.all([q1.ready, q2.ready, q3.ready]);
+    q1.send({ t: 'create', name: 'Quin', mode: 'run' }); await sleep(150);
+    q2.send({ t: 'create', name: 'Qat', mode: 'run' }); await sleep(150);
+    q3.send({ t: 'create', name: 'Quo', mode: 'run', versus: true }); await sleep(150);
+    for (const x of [q1, q2, q3]) x.send({ t: 'team', act: 'search' });
+    await sleep(1800);
+    const together = q1.last.room.code === q2.last.room.code && q1.last.room.members.length === 2 && q3.last.room.code !== q1.last.room.code && !q1.last.room.versus;
+    const host = [q1, q2].find((x) => x.last.room.host === x.last.room.you);
+    host.send({ t: 'team', act: 'versus' }); await sleep(200);
+    const on = host.last.room.versus && host.last.room.teams.length === 2;
+    host.send({ t: 'team', act: 'versus' }); await sleep(200);
+    ok(together && on && !host.last.room.versus, 'finding players: two lobbies that are not versus come together, a versus one stays apart; versus on (a team each) and off in the lobby');
+    // the host changes the lobby's game in the lobby (another mode, chained, versus: a team each); not someone else
+    const guest = [q1, q2].find((x) => x !== host);
+    guest.send({ t: 'settings', mode: 'ice' }); await sleep(200);
+    const notGuest = host.last.room.mode === 'run';
+    host.send({ t: 'settings', mode: 'ice', chain: 'all', versus: true }); await sleep(200);
+    const lr = guest.last.room;
+    ok(notGuest && lr.mode === 'ice' && lr.chain === 'all' && lr.versus && lr.teams.length === 2 && !lr.easy, 'lobby: the host changes the game in the lobby (mode, chained, versus: a team each), nobody else can');
+    for (const x of [q1, q2, q3]) x.ws.close();
+    for (const x of [a, b, c, d, e2]) x.ws.close();
+    await sleep(3500);   // (the connection rate limit)
+  }
   {
     // Run + Skate (protocol 7): level 9 is both final runs in a row; a client builds the very same level from 'start'
     const c = bot(NEW); await c.ready;
@@ -210,8 +334,8 @@ async function victory() {
 
   // ---- stats + a new game
   const stats = await (await fetch(`http://127.0.0.1:${PORT}/api/stats`)).json();
-  // onlineGames: this game + the two Run only level 9 rooms + the chained one + the Run + Skate one
-  ok(stats.totals.onlineWins === 1 && stats.onlineWinsByMode.ice === 1 && stats.totals.onlineGames === 5, `stats: onlineWins ${stats.totals.onlineWins}, ice ${stats.onlineWinsByMode.ice}`);
+  // onlineGames: this game + the two Run only level 9 rooms + the chained one + the two versus ones + the Run + Skate one
+  ok(stats.totals.onlineWins === 1 && stats.onlineWinsByMode.ice === 1 && stats.totals.onlineGames === 7, `stats: onlineWins ${stats.totals.onlineWins}, ice ${stats.onlineWinsByMode.ice}`);
   const prevStart = guest.last.start;
   host.send({ t: 'start' });
   for (let i = 0; i < 30 && !(guest.last.start !== prevStart && guest.last.snap.st === 'playing'); i++) await sleep(100); // can lag on a busy machine

@@ -209,9 +209,17 @@ function createLevelBoards(file) {
   }
   // a cleared level: ev = { local, easy, mode, level, time (s), team (players in the game) }; true when it's a new best
   // a board entry: [time / score, at, team, (hell) total time or 0, run?]
-  const entryOf = (v, ev, total) => { const run = ev.team > 1 ? runOf(ev) : ''; return [v, Date.now(), Math.max(1, Math.min(99, ev.team | 0 || 1)), ...(total || run ? [total || 0] : []), ...(run ? [run] : [])]; };
+  // (ev.order: its place in the team's list, a ms each: the best scorer named first)
+  const entryOf = (v, ev, total) => { const run = ev.team > 1 ? runOf(ev) : ''; return [v, Date.now() + Math.max(0, Math.min(99, ev.order | 0)), Math.max(1, Math.min(99, ev.team | 0 || 1)), ...(total || run ? [total || 0] : []), ...(run ? [run] : [])]; };
   // a team's run: this player was in it (whether or not it's their best)
-  const joinRun = (ev, key) => { const run = ev.team > 1 ? runOf(ev) : ''; if (!run || !key) return; const r = runs[run] ||= { k: [] }; if (!r.k.includes(key) && r.k.length < 99) r.k.push(key); };
+  // (vs: a versus game, marked; tm: each one's team's place, for the board's │ between teams)
+  const joinRun = (ev, key) => {
+    const run = ev.team > 1 ? runOf(ev) : '';
+    if (!run || !key) return;
+    const r = runs[run] ||= { k: [] };
+    if (ev.vs === true) { r.vs = 1; if (Number.isInteger(ev.tm) && ev.tm >= 0 && ev.tm < 99) (r.tm ||= {})[key] = ev.tm; }
+    if (!r.k.includes(key) && r.k.length < 99) r.k.push(key);
+  };
   // An old team time (from before runs kept their players) that this player is leaving for a faster one: its slot gets a
   // run with everyone still in it and this player, so they stay in it (greyed) instead of turning into a count (+1)
   function keepOldRun(bk, key, had) {
@@ -347,20 +355,27 @@ function createLevelBoards(file) {
       } else L = L.filter((r) => m.has(r[0]));
     }
     // slots: a team's rows from the same clear as one (one rank, everyone in it); a row: its first member, with the
-    // rest in its team list (older clients show the first). Its players with a better time since come last, greyed
-    // (gone): the slot stays while one of them still has it
+    // rest in its team list (older clients show the first), in the order they were recorded (the best scorer first:
+    // index.js). Its players with a better time since keep their place, greyed (gone): the slot stays while one of them
+    // still has it
     const slots = [];
     for (const r of L) { const s = slots[slots.length - 1]; if (s && sameRun(s[0], r)) s.push(r); else slots.push([r]); }
     const at = key ? slots.findIndex((s) => s.some((r) => r[0] === key)) : -1;
     const slotRow = (s) => {
-      const first = row(s[0], key);
+      const vsRun = s[0][5] && runs[s[0][5]] && runs[s[0][5]].vs, first = { ...row(s[0], key), ...(vsRun ? { vs: 1 } : {}) };
       const here = new Set(s.map((r) => r[0])), gone = ((s[0][5] && runs[s[0][5]] && runs[s[0][5]].k) || []).filter((k) => !here.has(k) && players[k]);
       // (a team bigger than the players known for it: a run from before runs kept their players, or one of them with a
       // better time since that the board can't name any more: the rest as a count)
       const more = Math.max(0, (s[0][3] | 0) - s.length - gone.length);
       if (s.length + gone.length < 2 && !more) return first;
-      const team = s.map((r) => { const x = row(r, key); return { name: x.name, color: x.color, ...(x.paid ? { paid: x.paid } : {}), ...(x.me ? { me: true } : {}) }; });
-      for (const k of gone) team.push({ name: players[k].n, color: players[k].c, gone: true, ...(k === key ? { me: true } : {}) });
+      const rowOf = new Map(s.map((r) => [r[0], r])), ks = (s[0][5] && runs[s[0][5]] && runs[s[0][5]].k) || [];
+      const keys = [...ks.filter((k) => rowOf.has(k) || gone.includes(k)), ...s.map((r) => r[0]).filter((k) => !ks.includes(k))];
+      const tmOf = (k) => { const t = s[0][5] && runs[s[0][5]] && runs[s[0][5]].tm; return t && t[k] != null ? { tm: t[k] } : {}; };   // (versus: its team's place)
+      const team = keys.map((k) => {
+        if (!rowOf.has(k)) return { name: players[k].n, color: players[k].c, gone: true, ...(k === key ? { me: true } : {}), ...tmOf(k) };
+        const x = row(rowOf.get(k), key);
+        return { name: x.name, color: x.color, ...(x.paid ? { paid: x.paid } : {}), ...(x.me ? { me: true } : {}), ...tmOf(k) };
+      });
       return { ...first, members: team, ...(more ? { more } : {}), ...(team.some((x) => x.me && !x.gone) ? { me: true } : {}) };
     };
     const mineRow = at >= 0 ? slots[at].find((r) => r[0] === key) : null;

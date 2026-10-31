@@ -334,7 +334,8 @@ function createAccounts(file, env = process.env) {
   // hell: { clears: { run / ice: { hell level: times cleared } }, best: { ...: { hell level: fastest } }, wins: { run / ice: escapes },
   // crowns, revives (in hell games: their own counts, not in the ones above; the revive unlocks count them all, recordFeat) }
   const blankHell = () => ({ clears: { run: {}, ice: {} }, best: { run: {}, ice: {} }, wins: { run: 0, ice: 0 }, crowns: 0, revives: 0 });
-  function blankStats() { return { clears: { run: {}, ice: {}, mixed: {} }, reached: { run: 0, ice: 0, mixed: 0 }, best: { run: {}, ice: {}, mixed: {} }, crowns: 0, revives: 0, hell: blankHell() }; }
+  // versus: { games, wins } (online games: the server's vsResults)
+  function blankStats() { return { clears: { run: {}, ice: {}, mixed: {} }, reached: { run: 0, ice: 0, mixed: 0 }, best: { run: {}, ice: {}, mixed: {} }, crowns: 0, revives: 0, hell: blankHell(), versus: { games: 0, wins: 0 } }; }
   const STAT_MODES = ['run', 'ice', 'mixed'], MAX_LEVEL = 9;
   const MIN_TIME = 5, MAX_TIME = 4 * 3600;   // a clear time outside this is ignored (seconds)
   function statsOf(a, kind) {
@@ -344,6 +345,7 @@ function createAccounts(file, env = process.env) {
     for (const m of STAT_MODES) { s.clears[m] ||= {}; s.reached[m] ||= 0; s.best[m] ||= {}; }
     s.hell ||= blankHell();
     s.hell.crowns ||= 0; s.hell.revives ||= 0;
+    s.versus ||= { games: 0, wins: 0 };
     return s;
   }
   function statsChanged() {
@@ -356,11 +358,14 @@ function createAccounts(file, env = process.env) {
   }
   // ev: { type: 'reached' | 'clear', mode, level, time? (a clear's seconds) } | { type: 'crown' | 'revive', hell? }
   //   | { type: 'hellClear', mode (run / ice), level (hell level), time? } | { type: 'hellWin', mode } (all of hell cleared)
+  //   | { type: 'vsGame' | 'vsWin' } (a versus game played / won)
   function record(a, kind, ev, n = 1) {
     if (!a || !ev || !(n > 0) || !active(a)) return;
     const s = statsOf(a, kind);
     if (ev.type === 'crown') { if (ev.hell) s.hell.crowns += n; else s.crowns += n; }   // (a hell game's: the hell table's own)
     else if (ev.type === 'revive') { if (ev.hell) s.hell.revives += n; else s.revives += n; }
+    else if (ev.type === 'vsGame') s.versus.games += n;
+    else if (ev.type === 'vsWin') s.versus.wins += n;
     else if (ev.type === 'reached' || ev.type === 'clear') {
       if (!STAT_MODES.includes(ev.mode) || !Number.isInteger(ev.level) || ev.level < 1 || ev.level > MAX_LEVEL) return;
       s.reached[ev.mode] = Math.max(s.reached[ev.mode], ev.level);

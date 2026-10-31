@@ -13,7 +13,8 @@ const MODES = [
   { id: 'run', label: 'Run only', tip: 'Run only (no ice): get through 8 levels of the labyrinth.' },
   { id: 'ice', label: 'Skate only', tip: 'Skate only (no run): get through 8 levels of the labyrinth.' },
 ];
-const modeLabel = (id, easy, hell, chain) => (MODES.find((m) => m.id === id) || MODES[0]).label + (hell ? (easy ? ' (hell, easy)' : ' (hell)') : easy ? ' (easy)' : '') + (chain === 'all' ? ' ⛓ everyone chained' : chain ? ' ⛓ chained' : '');
+const modeLabel = (id, easy, hell, chain, versus) => (MODES.find((m) => m.id === id) || MODES[0]).label + (hell ? (easy ? ' (hell, easy)' : ' (hell)') : easy ? ' (easy)' : '') + (versus ? ' ⚔ versus' : '') + (chain === 'all' ? ' ⛓ everyone chained' : chain ? ' ⛓ chained' : '');
+const VERSUS_TIP = ' Versus: teams against each other (make them in the lobby). You can only revive your own team; a team takes the crown once all of it has reached the goal. Points: how far your slowest kitty gets, and crowns; -1 when caught. Team with the most points wins.';
 const CHAIN_ALL_TIP = ' Everyone chained: the whole team on one chain, each kitty to the next; in a lobby, click a kitty to have them next to you. The chain shares its boots. Chained games have their own level times.';
 const CHAIN_TIP = ' Chained: kitties are chained up in twos (one chain of three when there are an odd number); in a lobby, click a kitty to pick your partner. A chain shares its boots. Chained games have their own level times.';
 const EASY_TIP = 'Easy: when everyone is down, the level starts over instead of the game being over. Easy games have their own rewards.';
@@ -41,6 +42,26 @@ const CSS = `
 .rkl-chainbox .rkl-chainbtn.rkl-on::before{background:#b9a0ff;border-color:#f1ebff;}
 .rkl-chainpick:hover{border-color:#ffcf5a;}
 .rkl-chainno{font-size:11px;font-weight:900;color:#d8dde3;margin-left:4px;}
+/* versus: FIND OPPONENTS with its ANY MODE button under it (green while on: the game's green button, ui.js .rkr-set) */
+.rkl-searchbox{display:flex;flex-direction:column;align-items:stretch;gap:6px;}
+/* versus: its switch (coral), and the lobby's teams: a box each with its name (yours to type in), its kitties, JOIN */
+.rkl-vsbtn{width:100%;justify-content:center;min-height:34px;margin-top:6px;}
+.rkl-modebox .rkl-vsbtn.rkl-on{background:rgba(255,120,90,.22);border-color:#ff8a5c;color:#fff0ea;}
+.rkl-modebox .rkl-vsbtn.rkl-on::before{background:#ff8a5c;border-color:#fff0ea;}
+.rkl-slots.rkl-teams{display:flex;flex-direction:column;gap:8px;}
+.rkl-team{display:flex;flex-direction:column;gap:6px;padding:8px;border-radius:16px;background:rgba(255,138,92,.08);border:2px solid rgba(255,138,92,.35);}
+.rkl-team.rkl-myteam{border-color:#ff8a5c;}
+.rkl-thead{display:flex;align-items:center;gap:8px;font-weight:900;}
+.rkl-tname{flex:1;min-width:0;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#ffd2c2;}
+.rkl-in.rkl-tin{flex:1;min-width:0;height:34px;box-sizing:border-box;padding:4px 10px;font-size:15px;}
+.rkl-tn{flex:none;font-size:12px;color:rgba(255,255,255,.6);}
+.rkl-tslots{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;}
+.rkl-team.rkl-tready{border-color:#4fe36a;background:rgba(79,227,106,.1);}
+.rkl-tok{flex:none;font-size:12px;font-weight:900;color:#4fe36a;}
+.rkr-btn.rkl-tbtn.rkl-rdy{background:#4fe36a;color:#123;}
+.rkl-treq{display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:12px;background:rgba(255,207,90,.12);border:2px solid rgba(255,207,90,.4);font-weight:800;font-size:14px;}
+.rkl-treq span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;}
+.rkr-btn.rkl-tbtn{flex:none;min-height:32px;font-size:13px;padding:4px 12px 5px;border-radius:12px;border-width:3px;}
 .rkl-slot{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:14px;background:rgba(255,255,255,.08);border:2px solid rgba(255,255,255,.12);
   font-weight:800;min-height:46px;text-align:left;}
 .rkl-slot.rkl-open{opacity:.35;border-style:dashed;}
@@ -68,6 +89,14 @@ const CSS = `
   .rkl-label{margin-top:0;}
 }
 .rkl-roommode{font-weight:900;color:#bfe8ff;}
+/* the lobby's buttons each in a colour of their own (not all blue); a switch while on: green (.rkr-set) */
+.rkr-btn.rkr-alt.rkl-cteal{background:linear-gradient(180deg,#e0fff8,#7ee8d4 55%,#2fbfa8);}
+.rkr-btn.rkr-alt.rkl-clilac{background:linear-gradient(180deg,#f1e8ff,#c9a8ff 55%,#9a72ff);}
+.rkr-btn.rkr-alt.rkl-cpeach{background:linear-gradient(180deg,#fff0e0,#ffc08a 55%,#ff8f5a);}
+.rkr-btn.rkr-alt.rkl-cswitch{background:linear-gradient(180deg,#f4f0fc,#d4cbec 55%,#ab9ed4);}
+.rkl-modeline{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;}
+.rkl-modeedit{display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px;border-radius:16px;background:rgba(0,0,0,.2);}
+.rkl-modeedit .rkl-row{margin:0;}
 .rkl-link{font-size:13px;font-weight:700;opacity:.75;word-break:break-all;user-select:text;-webkit-user-select:text;}
 .rkl-invite{min-width:220px;}
 /* invite panel: the players you played with (who's online), and the lobby link */
@@ -280,6 +309,8 @@ function createLobbyUI(root, cb) {
   // chained or not ('0' off, '1' in pairs, 'all' everyone on one chain): one choice for every mode, remembered
   function savedChain() { try { const v = localStorage.getItem('rkr-chain'); return v === '1' || v === 'all' ? v : '0'; } catch { return '0'; } }
   function saveChain(v) { try { localStorage.setItem('rkr-chain', v); } catch { /* ignore */ } }
+  function savedVersus() { try { return localStorage.getItem('rkr-versus') === '1'; } catch { return false; } }
+  function saveVersus(v) { try { localStorage.setItem('rkr-versus', v ? '1' : '0'); } catch { /* ignore */ } }
   // Hell, the 4th mode (once it's open: cb.hellOpen(mode)): its own Run / Skate choice, remembered like the mode
   function savedHellKind() { try { return localStorage.getItem('rkr-hellmode') === 'ice' ? 'ice' : 'run'; } catch { return 'run'; } }
   function saveHellKind(v) { try { localStorage.setItem('rkr-hellmode', v); } catch { /* ignore */ } }
@@ -331,7 +362,12 @@ function createLobbyUI(root, cb) {
     chainBox.append(chainBtn, chainRow);
     if (!opts.chain) chainBox.style.display = 'none';   // (solo: no chain)
     const chainNow = () => { const v = opts.chain ? savedChain() : '0'; return v === 'all' && opts.chain !== 'all' ? '1' : v; };
-    const anyHell = () => hellAvail('run') || hellAvail('ice');
+    const vsBtn = el('button', 'rkl-mode rkl-vsbtn');
+    vsBtn.type = 'button';
+    if (!opts.versus) vsBtn.style.display = 'none';
+    vsBtn.addEventListener('click', () => { saveVersus(!savedVersus()); paint(); });
+    const vsOn = () => !!opts.versus && savedVersus();
+    const anyHell = () => (hellAvail('run') || hellAvail('ice')) && !vsOn();
     const kindOf = () => (hellAvail(kind) ? kind : hellAvail('run') ? 'run' : 'ice');
     const isHell = () => mode === 'hell' && anyHell();
     const box = el('div', 'rkl-modebox');
@@ -375,7 +411,12 @@ function createLobbyUI(root, cb) {
         b.classList.toggle('rkl-on', on);
         b.setAttribute('aria-checked', String(on));
       }
-      tip.textContent = tip.title = (h ? (easy ? HELL_EASY_TIP : HELL_TIP) : easy ? EASY_TIP : MODES.find((m) => m.id === mode).tip) + (cv === 'all' ? CHAIN_ALL_TIP : ch ? CHAIN_TIP : '');
+      const vs = vsOn(), ez = easy && !vs;
+      vsBtn.textContent = '⚔ Versus: ' + (vs ? 'On' : 'Off');
+      vsBtn.classList.toggle('rkl-on', vs);
+      vsBtn.setAttribute('aria-pressed', String(vs));
+      diff.style.display = vs ? 'none' : '';   // (versus: no easy game)
+      tip.textContent = tip.title = (h ? (easy ? HELL_EASY_TIP : HELL_TIP) : ez ? EASY_TIP : MODES.find((m) => m.id === mode).tip) + (vs ? VERSUS_TIP : '') + (cv === 'all' ? CHAIN_ALL_TIP : ch ? CHAIN_TIP : '');
     };
     const set = (id) => { mode = id; saveMode(mode); paint(); };
     for (const m of [...MODES, { id: 'hell', label: 'Hell' }]) {
@@ -414,9 +455,9 @@ function createLobbyUI(root, cb) {
       b.addEventListener('click', () => { saveChain(v); chainOpen = false; paint(); });
       chainRow.appendChild(b);
     }
-    box.append(modes, kinds, diff, chainBox);
+    box.append(modes, kinds, diff, chainBox, vsBtn);
     paint();
-    return { modes: box, tip, get: () => (isHell() ? kindOf() : mode === 'hell' ? 'mixed' : mode), easy: () => easy, hell: isHell,
+    return { modes: box, tip, get: () => (isHell() ? kindOf() : mode === 'hell' ? 'mixed' : mode), easy: () => easy && !vsOn(), hell: isHell, versus: vsOn,
       chain: () => (chainNow() === 'all' ? 'all' : chainNow() === '1'), repaint: paint };
   }
 
@@ -569,7 +610,7 @@ function createLobbyUI(root, cb) {
     joinCol.append(jt, list, codeRow, joinErr);
 
     // right: start your own (mode remembered)
-    const mp = modePicker(savedMode(), { chain: 'all' });
+    const mp = modePicker(savedMode(), { chain: 'all', versus: true });
     // how many kitties may join (2..MAX_KITTIES, remembered)
     let max = MAX_KITTIES;
     try { const v = parseInt(localStorage.getItem('rkr-max') || '', 10); if (v >= 2 && v <= MAX_KITTIES) max = v; } catch { /* ignore */ }
@@ -607,7 +648,7 @@ function createLobbyUI(root, cb) {
       lastAct = 'create';
       const password = priv.checked ? privPass.value.trim() : '';
       if (priv.checked && !password) { createErr.textContent = 'Pick a password for your private lobby.'; privPass.focus(); return; }
-      cb.onCreate(getName(), mp.get(), { max, password, easy: mp.easy(), hell: mp.hell(), chain: mp.chain() });
+      cb.onCreate(getName(), mp.get(), { max, password, easy: mp.easy(), hell: mp.hell(), chain: mp.chain(), versus: mp.versus() });
     });
     const newCol = el('div', 'rkl-col rkl-newcol');
     newCol.append(el('div', 'rkl-ctitle', 'Start your own'), mp.modes, mp.tip, sizeRow, privRow, create, createErr);
@@ -666,8 +707,8 @@ function createLobbyUI(root, cb) {
       const set = (e, v) => { if (e.textContent !== v) e.textContent = v; };
       r.locked = !!l.locked;
       set(r.hh, `${l.locked ? '🔒 ' : ''}${l.host}'s lobby`);
-      set(r.sub, playing ? `${modeLabel(l.mode, l.easy, l.hell, l.chain)} · playing level ${l.level} · ${l.players}/${l.max}`
-        : `${modeLabel(l.mode, l.easy, l.hell, l.chain)} · waiting · ${l.players}/${l.max}`);
+      set(r.sub, playing ? `${modeLabel(l.mode, l.easy, l.hell, l.chain, l.versus)} · playing level ${l.level} · ${l.players}/${l.max}`
+        : `${modeLabel(l.mode, l.easy, l.hell, l.chain, l.versus)} · waiting · ${l.players}/${l.max}`);
       set(r.btn, full ? 'FULL' : playing ? 'HOP IN' : 'JOIN');
       r.row.title = `Code ${l.code}`;
       r.btn.disabled = full;
@@ -706,8 +747,35 @@ function createLobbyUI(root, cb) {
       const code = el('div', 'rkl-bigcode');
       const roomMode = el('div', 'rkl-roommode');
       const link = el('div', 'rkl-link');
+      // the host: CHANGE MODE opens the mode picker right here (mode, normal / easy, hell, chained, versus); APPLY changes
+      // the lobby's game for everyone, no new lobby needed
+      const modeBtn = el('button', 'rkr-btn rkr-alt rkl-mini rkl-clilac', '⚙ CHANGE MODE');
+      modeBtn.type = 'button';
+      const modeLine = el('div', 'rkl-modeline');
+      modeLine.append(roomMode, modeBtn);
+      const modeEdit = el('div', 'rkl-modeedit');
+      modeEdit.hidden = true;
+      modeEdit.style.display = 'none';
+      const closeEdit = () => { modeEdit.textContent = ''; modeEdit.style.display = 'none'; modeEdit.hidden = true; modeBtn.textContent = '⚙ CHANGE MODE'; };
+      modeBtn.addEventListener('click', () => {
+        if (!modeEdit.hidden) { closeEdit(); return; }
+        const cur = roomRefs.info;   // (the picker starts at the lobby's game)
+        saveMode(cur.hell ? 'hell' : cur.mode); if (cur.hell) saveHellKind(cur.mode);
+        saveEasy(!!cur.easy); saveChain(cur.chain === 'all' ? 'all' : cur.chain ? '1' : '0'); saveVersus(!!cur.versus);
+        const mp = modePicker(savedMode(), { chain: 'all', versus: true });
+        const apply = el('button', 'rkr-btn rkl-small', 'APPLY');
+        const cancel = el('button', 'rkr-btn rkr-alt rkl-small', 'CANCEL');
+        apply.type = cancel.type = 'button';
+        apply.addEventListener('click', () => { if (cb.onSettings) cb.onSettings(mp.get(), { easy: mp.easy(), hell: mp.hell(), chain: mp.chain(), versus: mp.versus() }); closeEdit(); });
+        cancel.addEventListener('click', closeEdit);
+        const btns = el('div', 'rkl-row');
+        btns.append(apply, cancel);
+        modeEdit.append(mp.modes, mp.tip, btns);
+        modeEdit.hidden = false; modeEdit.style.display = '';
+        modeBtn.textContent = '⚙ CLOSE';
+      });
       // INVITE FRIENDS opens the invite panel: the players you played with (invite the ones online), and the link
-      const copy = el('button', 'rkr-btn rkr-alt rkl-invite', '<span>INVITE FRIENDS</span><small>players you played with, or the link</small>');
+      const copy = el('button', 'rkr-btn rkr-alt rkl-invite rkl-cteal', '<span>INVITE FRIENDS</span><small>players you played with, or the link</small>');
       const recent = el('div', 'rkl-recent');
       recent.hidden = true;
       copy.addEventListener('click', () => {
@@ -736,21 +804,37 @@ function createLobbyUI(root, cb) {
       const start = el('button', 'rkr-btn', '<span>START GAME</span>');
       start.addEventListener('click', () => cb.onStart());
       errEl = el('div', 'rkl-err');
+      // versus: the host looks for other teams to play against (the server puts searching lobbies together)
+      const search = el('button', 'rkr-btn rkr-alt rkl-small rkl-search rkl-cpeach', '🔍 FIND OPPONENTS');
+      search.addEventListener('click', () => cb.onTeam && cb.onTeam({ act: 'search' }));
+      // ...under it, the switch to search in any mode too (matched into another mode's lobby or game, it plays that mode)
+      const searchAny = el('button', 'rkr-btn rkr-alt rkl-small rkl-cswitch');
+      searchAny.type = 'button';
+      searchAny.addEventListener('click', () => cb.onTeam && cb.onTeam({ act: 'any' }));
+      // ...and versus on / off (only versus lobbies are matched with versus ones; on: everyone a team of their own)
+      const versusBtn = el('button', 'rkr-btn rkr-alt rkl-small rkl-cswitch');
+      versusBtn.type = 'button';
+      versusBtn.addEventListener('click', () => cb.onTeam && cb.onTeam({ act: 'versus' }));
+      const searchBox = el('div', 'rkl-searchbox');
+      searchBox.append(search, searchAny, versusBtn);
       const leave = el('button', 'rkr-btn rkr-alt rkl-small', 'LEAVE');
       leave.addEventListener('click', () => cb.onLeave());
       const row = el('div', 'rkl-row');
       row.append(copy);
       const row2 = el('div', 'rkl-row');
-      row2.append(start, leave);
-      mount([h, code, roomMode, link, row, recent, slots, wait, row2, errEl]);
-      roomRefs = { code, roomMode, link, slots, wait, start, recent, rlist };
+      row2.append(start, searchBox, leave);
+      mount([h, code, modeLine, modeEdit, link, row, recent, slots, wait, row2, errEl]);
+      roomRefs = { code, roomMode, modeBtn, modeEdit, closeEdit, link, slots, wait, start, search, searchBox, searchAny, versusBtn, recent, rlist };
     }
     const r = roomRefs;
     r.code.textContent = info.code;
-    r.roomMode.textContent = `Mode: ${modeLabel(info.mode, info.easy, info.hell, info.chain)} · up to ${info.max || MAX_KITTIES} kitties` + (info.locked ? ` · 🔒 private, password: ${info.pass || '?'}` : '');
+    r.roomMode.textContent = `Mode: ${modeLabel(info.mode, info.easy, info.hell, info.chain, info.versus)} · up to ${info.max || MAX_KITTIES} kitties` + (info.locked ? ` · 🔒 private, password: ${info.pass || '?'}` : '');
     r.pass = info.locked ? info.pass || '' : '';
     r.link.textContent = inviteUrl(info.code, r.pass);
+    // (versus: a team name being typed in survives the redraw)
+    const typing = document.activeElement && document.activeElement.classList.contains('rkl-tin') && r.slots.contains(document.activeElement) ? document.activeElement.value : null;
     r.slots.textContent = '';
+    r.slots.classList.toggle('rkl-teams', !!info.versus);
     r.fids = new Set(info.members.map((m) => m.fid).filter(Boolean));
     renderRecent();
     // everyone in the lobby + one open slot (up to info.max); chained: in chain order, each kitty's chain numbered, and
@@ -759,13 +843,18 @@ function createLobbyUI(root, cb) {
     const members = info.chain && Array.isArray(info.order) ? info.order.map((id) => info.members.find((m) => m.id === id)).filter(Boolean) : info.members;
     const chainNo = new Map();
     if (info.chain === 'all') members.forEach((m, k) => chainNo.set(m.id, k + 1));   // (everyone: its place along the chain)
-    else if (info.chain) for (let i = 0, g = 1; i < members.length; g++) { const n = members.length - i === 3 ? 3 : 2; for (let k = i; k < i + n && k < members.length; k++) chainNo.set(members[k].id, g); i += n; }
+    else if (info.chain && info.versus) {   // (versus: chains inside each team, numbered across them)
+      let g = 1;
+      for (const t of info.teams || []) {
+        const tm = members.filter((m) => (info.mt || {})[m.id] === t.id);
+        for (let i = 0; i < tm.length; g++) { const n = tm.length - i === 3 ? 3 : 2; for (let k = i; k < i + n && k < tm.length; k++) chainNo.set(tm[k].id, g); i += n; }
+      }
+    } else if (info.chain) for (let i = 0, g = 1; i < members.length; g++) { const n = members.length - i === 3 ? 3 : 2; for (let k = i; k < i + n && k < members.length; k++) chainNo.set(members[k].id, g); i += n; }
     const myChain = chainNo.get(info.you);
-    for (let i = 0; i < Math.min(max, members.length + 1); i++) {
-      const m = members[i];
+    const slotFor = (m, i) => {
       const s = el('div', 'rkl-slot' + (m ? '' : ' rkl-open') + (m && m.id === info.you ? ' rkl-me' : ''));
       const mi = members.findIndex((x) => x.id === info.you);
-      const pickable = info.chain === 'all' ? Math.abs(i - mi) > 1 : chainNo.get(m && m.id) !== myChain;   // (everyone: not already next to you)
+      const pickable = (!info.versus || (m && (info.mt || {})[m.id] === (info.mt || {})[info.you])) && (info.chain === 'all' ? Math.abs(i - mi) > 1 : chainNo.get(m && m.id) !== myChain);   // (everyone: not already next to you; versus: your team only)
       if (m && info.chain && info.phase === 'lobby' && m.id !== info.you && pickable && cb.onChainWith) {
         s.classList.add('rkl-chainpick');
         s.title = info.chain === 'all' ? 'Have ' + m.name + ' next to you on the chain' : 'Chain up with ' + m.name;
@@ -794,15 +883,114 @@ function createLobbyUI(root, cb) {
         cat.appendChild(b);
       }
       if (m && m.id === info.host) cat.appendChild(el('div', 'rkl-crown', CROWN));
-      r.slots.appendChild(s);
-    }
+      return s;
+    };
+    if (info.versus) renderTeams(info, members, slotFor, typing);
+    else for (let i = 0; i < Math.min(max, members.length + 1); i++) r.slots.appendChild(slotFor(members[i], i));
     const isHost = info.host === info.you;
     const host = info.members.find((m) => m.id === info.host);
     r.start.style.display = isHost && info.phase === 'lobby' ? '' : 'none';
+    // (the host, any lobby: look for players (versus: opponents), in any mode too, versus on / off)
+    r.searchBox.style.display = isHost && info.phase === 'lobby' ? '' : 'none';
+    r.info = info;
+    r.modeBtn.style.display = isHost && info.phase === 'lobby' && cb.onSettings ? '' : 'none';
+    if (!(isHost && info.phase === 'lobby') && !r.modeEdit.hidden) r.closeEdit();   // (not the host any more, or the game started)
+    const any = !!info.anyMode, vs = !!info.versus;
+    r.search.textContent = info.search ? '🔍 SEARCHING… (stop)' : vs ? '🔍 FIND OPPONENTS' : '🔍 FIND PLAYERS';
+    r.search.classList.toggle('rkr-alt', !info.search);   // (green while searching, as ANY MODE while on)
+    r.search.classList.toggle('rkr-set', !!info.search);
+    const who = vs ? 'other teams' : 'other players';
+    r.search.title = info.search ? `Looking for ${who}${any ? ' in any mode' : ' in this mode'}: a lobby that searches too comes in, or you join a game in progress. Click to stop` : `Look for ${who} to play with${any ? ' in any mode' : ' in this mode'} (other lobbies searching, or games in progress)`;
+    r.searchAny.textContent = any ? '🌐 ANY MODE: ON' : '🌐 ANY MODE: OFF';
+    r.searchAny.classList.toggle('rkr-alt', !any);
+    r.searchAny.classList.toggle('rkr-set', any);
+    r.searchAny.setAttribute('aria-pressed', String(any));
+    r.searchAny.title = 'Also match with lobbies and games of other modes (you then play their mode; a group searching only its own mode keeps it)';
+    r.versusBtn.textContent = vs ? '⚔ VERSUS: ON' : '⚔ VERSUS: OFF';
+    r.versusBtn.classList.toggle('rkr-alt', !vs);
+    r.versusBtn.classList.toggle('rkr-set', vs);
+    r.versusBtn.setAttribute('aria-pressed', String(vs));
+    r.versusBtn.style.display = info.hell ? 'none' : '';   // (no hell versus)
+    r.versusBtn.title = vs ? 'Teams against each other: you are matched with versus lobbies and games only. Click to play together instead' : 'Play together: you are matched with lobbies and games that are not versus. Click to play teams against each other';
     r.wait.textContent = (info.phase !== 'lobby'
       ? 'A run is in progress. Joining…'
-      : isHost ? (info.chain && info.members.length < 2 ? 'A chained game needs at least two kitties.' : `You're the host. Start whenever you're ready (${info.members.length}/${max}).`)
-        : `Waiting for ${host ? host.name : 'the host'} to start…`) + (info.chain && info.phase === 'lobby' && info.members.length > 2 ? (info.chain === 'all' ? ' Click a kitty to have them next to you on the chain.' : ' Click a kitty to chain up with them.') : '');
+      : isHost ? (info.versus && new Set(Object.values(info.mt || {})).size < 2 ? 'Versus needs at least two teams: someone has to make a new team.'
+        : info.versus && info.chain && Object.values(info.mt || {}).some((t, _, all) => all.filter((x) => x === t).length === 1) ? 'Chained versus: every team needs at least two kitties to start (a kitty on its own would have no chain).'
+        : info.search && !info.versus ? `Searching for players${info.search === 'any' ? ' in any mode' : ''}… You're the host: start whenever you like.`
+        : info.versus && info.search ? `Searching for opponents${info.search === 'any' ? ' in any mode' : ''}… ${(info.teams || []).filter((t) => t.ready).length} of ${(info.teams || []).length} teams ready.`
+        : info.versus ? `You're the host. ${(info.teams || []).filter((t) => t.ready).length} of ${(info.teams || []).length} teams ready - start whenever you like (${info.members.length}/${max}).`
+        : info.chain && info.members.length < 2 ? 'A chained game needs at least two kitties.' : `You're the host. Start whenever you're ready (${info.members.length}/${max}).`)
+        : (info.search ? `Searching for ${info.versus ? 'opponents' : 'players'}${info.search === 'any' ? ' in any mode' : ''}… ` : '') + `Waiting for ${host ? host.name : 'the host'} to start…`) + (info.chain && info.phase === 'lobby' && info.members.length > 2 ? (info.chain === 'all' ? ' Click a kitty to have them next to you on the chain.' : ' Click a kitty to chain up with them.') : '');
+  }
+
+  // versus: a box a team, its name (yours: type to rename it, sent when you're done), its kitties, JOIN on the others
+  // (JOIN asks; someone in it accepts; up to TEAM_MAX), NEW TEAM under yours when you're not on your own, and who asks to
+  // join yours (ACCEPT / decline)
+  const TEAM_MAX = 5;   // (server/index.js TEAM_MAX)
+  function renderTeams(info, members, slotFor, typing) {
+    const r = roomRefs, mt = info.mt || {}, mineT = mt[info.you], lobby = info.phase === 'lobby';
+    for (const t of info.teams || []) {
+      const tm = members.filter((m) => mt[m.id] === t.id);
+      if (!tm.length) continue;
+      const mine = t.id === mineT;
+      const box = el('div', 'rkl-team' + (mine ? ' rkl-myteam' : '') + (t.ready ? ' rkl-tready' : ''));
+      const head = el('div', 'rkl-thead');
+      if (mine && lobby) {
+        const inp = el('input', 'rkl-in rkl-tin');
+        inp.maxLength = 20; inp.value = typing != null ? typing : t.name; inp.placeholder = 'Team name';
+        inp.setAttribute('aria-label', 'Your team name');
+        const sendName = () => { const v = inp.value.trim(); if (v && v !== t.name) cb.onTeam({ act: 'name', name: v }); };
+        inp.addEventListener('change', sendName);
+        inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+        head.appendChild(inp);
+        if (typing != null) setTimeout(() => { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }, 0);
+      } else {
+        const n = el('span', 'rkl-tname');
+        n.textContent = t.name;
+        head.appendChild(n);
+      }
+      head.appendChild(el('span', 'rkl-tn', tm.length + '/' + TEAM_MAX));
+      if (t.ready && !(mine && lobby)) head.appendChild(el('span', 'rkl-tok', '✓ READY'));
+      if (mine && lobby && cb.onTeam) {   // (the team is set to go: everyone sees it)
+        const rb = el('button', 'rkr-btn rkl-tbtn' + (t.ready ? ' rkl-rdy' : ' rkr-alt'), t.ready ? '✓ READY' : 'READY');
+        rb.title = t.ready ? 'Your team is set to go. Click to take it back' : 'Tell everyone your team is set to go';
+        rb.addEventListener('click', () => cb.onTeam({ act: 'ready' }));
+        head.appendChild(rb);
+      }
+      if (!mine && lobby && tm.length < TEAM_MAX && cb.onTeam) {
+        const asked = (t.req || []).includes(info.you);
+        const j = el('button', 'rkr-btn rkr-alt rkl-tbtn', asked ? 'ASKED ✕' : 'JOIN');
+        j.title = asked ? 'Waiting for someone in the team to accept. Click to take it back' : 'Ask to join this team (someone in it accepts)';
+        j.addEventListener('click', () => cb.onTeam({ act: asked ? 'unask' : 'join', id: t.id }));
+        head.appendChild(j);
+      }
+      if (mine && lobby && tm.length > 1 && cb.onTeam) {
+        const nb = el('button', 'rkr-btn rkr-alt rkl-tbtn', 'NEW TEAM');
+        nb.title = 'Leave this team and make one of your own';
+        nb.addEventListener('click', () => cb.onTeam({ act: 'new' }));
+        head.appendChild(nb);
+      }
+      const grid = el('div', 'rkl-tslots');
+      for (const m of tm) grid.appendChild(slotFor(m, members.indexOf(m)));
+      box.append(head, grid);
+      // yours: who asks to join (ACCEPT / ✕)
+      if (mine && lobby && cb.onTeam) for (const id of t.req || []) {
+        const who = info.members.find((m) => m.id === id);
+        if (!who) continue;
+        const row = el('div', 'rkl-treq');
+        const n = el('span');
+        n.textContent = who.name + ' asks to join';
+        n.style.color = hex(who.color);
+        const ok = el('button', 'rkr-btn rkl-tbtn', 'ACCEPT');
+        ok.addEventListener('click', () => cb.onTeam({ act: 'accept', id }));
+        const no = el('button', 'rkr-btn rkr-alt rkl-tbtn', '✕');
+        no.title = 'Decline';
+        no.addEventListener('click', () => cb.onTeam({ act: 'decline', id }));
+        row.append(n, ok, no);
+        box.appendChild(row);
+      }
+      r.slots.appendChild(box);
+    }
   }
 
   // ---- the invite panel (main.js keeps the list: cb.recent() -> [{ fid, name, color, fav? }], newest first) ----

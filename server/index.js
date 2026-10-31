@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { CFG, NET, PLAYER_COLORS, PLAYER_NAMES, SKATE_FINAL_LEVEL, HELL_MODES, stageStep } from '../public/js/shared/config.js';
 import { hashSeed } from '../public/js/shared/rng.js';
-import { GAME_MODES, createSim, stepSim, addPlayer, removePlayer, chainGroups, chainJoin, chainLeave, chainRejoin } from '../public/js/shared/sim.js';
+import { GAME_MODES, createSim, stepSim, addPlayer, removePlayer, chainGroups, chainJoin, chainLeave, chainRejoin, vsLeave, vsReturn, vsScore, loneOf, groupJoin, mergeReturn } from '../public/js/shared/sim.js';
 import { serializeEnemies } from '../public/js/shared/enemies.js';
 import { levelHash } from '../public/js/shared/maze.js';
 import { createStats } from './stats.js';
@@ -45,6 +45,8 @@ const finaleFor = (mode, f) => (f >= 24 ? 24 : f >= 23 ? 23 : f >= 22 ? 22 : f >
 const runFinaleOk = (client, room) => !(room.phase === 'playing' && room.sim) || client.v >= FINALE_PROTOCOL[finaleFor(room.mode, room.sim.finales | 0)];
 const modeOk = (client, mode) => client.v >= (MODE_MIN_PROTOCOL[mode] || 0);
 const MODE_NAMES = { mixed: 'Run + Skate', run: 'Run only', ice: 'Skate only' };
+// (a lobby's game in words, for the chat: "Hell Run only · Easy · Chained: pairs · Versus")
+const modeName = (room) => [(room.hell ? 'Hell ' : '') + MODE_NAMES[room.mode], room.easy && 'Easy', room.chain && (room.chain === 'all' ? 'Chained: everyone' : 'Chained: pairs'), room.versus && 'Versus'].filter(Boolean).join(' · ');
 // easy games (a level starts over when everyone is down): older clients would sit on a dead level
 const EASY_PROTOCOL = 19;
 // (easy hell: older clients play hell without the retry)
@@ -60,6 +62,10 @@ const hellOk = (client, room) => !room.hell || (client.v >= HELL_PROTOCOL && !(r
 // see kitties pulled about; they can't join one
 const CHAIN_PROTOCOL = 34;   // (33: the first, shorter chain)
 const chainOk = (client, room) => !room.chain || client.v >= CHAIN_PROTOCOL;
+// versus lobbies (teams against each other: shared/sim.js vsTeam): only clients that know the teams and their points
+const VERSUS_PROTOCOL = 35;
+const versusOk = (client, room) => !room.versus || client.v >= VERSUS_PROTOCOL;
+const TEAM_MAX = 5;   // kitties in one versus team (as many full cards as the HUD shows)
 // a game played on chains (its own level boards and fastest lists): a chained room with a pair in it
 const chainedGame = (room) => !!(room.chain && room.sim && room.sim.chain && room.sim.players.length > 1);
 const hellOpenFor = (client, mode) => accounts.hellOpenFor({ sub: client.acct, pid: client.pid }, mode) || levels.can9({ acct: client.acct, pid: client.pid });
@@ -89,12 +95,12 @@ const INVITE_AGAIN_MS = 15e3;                           // the same inviter, the
 const invitedAt = new Map();                            // 'inviter>friend' -> when (oldest dropped past 5000)
 const friendId = (pid) => (pid ? crypto.createHash('sha256').update('rkr-friend:' + pid).digest('base64url').slice(0, 16) : '');
 const FID = /^[\w-]{16}$/;
-const LOBBY_MSGS = new Set(['create', 'join', 'leave', 'list', 'start']);
+const LOBBY_MSGS = new Set(['create', 'join', 'leave', 'list', 'start', 'team']);
 // A client that stops reading would make us buffer its messages forever. Snapshots are ~1-10 KB at 20 Hz,
 // so 1 MB is many seconds behind: it can't play anyway, drop it (it reconnects).
 const MAX_BUFFERED = 1 << 20;
 // Reconnect grace: a kitty that drops out mid-game and comes back (same tab token) within this keeps its state.
-const REJOIN_GRACE_MS = 60e3;
+const REJOIN_GRACE_MS = 10 * 60e3;   // (10 minutes)
 // Anonymous play stats (title screen STATS page) live next to the feedback file.
 const stats = createStats(process.env.STATS_FILE || path.join(path.dirname(FEEDBACK_FILE), 'stats.json'));
 // Legends board (online winners sign it; see legends.js), next to the feedback file too.
@@ -464,9 +470,19 @@ function handleOfflineSign(req, res) {
 }
 
 // A room just won: everyone in it at this moment is on the board and may sign it; each gets the board right away.
+// the game's kitties (ids) best scorer first (the scoreboard's score: main.js), as the boards list a team's names (a big
+// team shows its first few, the rest on hover)
+const scoreOf = (p) => (p.rescues | 0) + (p.bonus || 0) - (p.deaths | 0) + Math.round(20 * (p.ran || 0)) + 5 * (p.finishes || 0);
+function byScore(room, ids) {
+  const sim = room.sim, s = (id) => { const p = sim && sim.players.find((q) => q.id === id); return p ? scoreOf(p) : -Infinity; };
+  return ids.slice().sort((a, b) => s(b) - s(a));
+}
 function legendsOnWin(room, e) {
   if (room.easy) return;   // (the board is for games won without starting levels over)
-  legends.recordWin(room.mode, e.time, room.members, room.sim ? room.sim.time : NaN, chainedGame(room));   // (the final level's time, the whole game's; chained)
+  // (best scorer first; versus: the team with the most points first, and each one's team's place)
+  const ids = room.versus && room.sim ? byTeamPoints(room, room.members.map((m) => m.id)) : byScore(room, room.members.map((m) => m.id));
+  const members = ids.map((id) => room.members.find((m) => m.id === id));
+  legends.recordWin(room.mode, e.time, members, room.sim ? room.sim.time : NaN, chainedGame(room), room.versus && room.sim ? teamPlaces(room, ids) : false);   // (the final level's time, the whole game's; chained, versus)
   for (const m of room.members) { const b = legends.boardFor(m); if (b) send(m.ws, b); }
 }
 
@@ -643,6 +659,11 @@ function roomInfo(room) {
       cos: m.cos && m.cos.length ? m.cos : undefined,   // cos: switched-on unlocks (shared/unlocks.js)
       ps: m.paid && m.ps ? m.ps : undefined })),   // ps: how the number is drawn ('koi'; none: the classic tag)
     order: room.chain ? chainOrder(room).slice() : undefined,   // chained: who chains up with whom (member ids, chain order)
+    versus: room.versus || undefined,   // versus: the teams [{ id, name }] (members' team: mt, member id -> team id)
+    teams: room.versus ? [...room.teams].map(([id, t]) => ({ id, name: t.name, req: t.req.size ? [...t.req] : undefined, ready: t.ready || undefined })) : undefined,   // (req: who asks to join it; ready: set to go)
+    mt: room.versus ? Object.fromEntries(room.members.map((m) => [m.id, m.team])) : undefined,
+    search: room.search ? (room.searchAny ? 'any' : true) : undefined,   // versus: looking for opponents (matchmake; 'any': in any mode)
+    anyMode: room.searchAny || undefined,   // ...the any mode switch (also while not searching)
   };
 }
 
@@ -655,11 +676,11 @@ function lobbyList(client) {
   const list = [];
   for (const r of rooms.values()) {
     if (r.members.length === 0) continue;
-    if (!modeOk(client, r.mode) || !runFinaleOk(client, r) || !easyOk(client, r) || !hellOk(client, r) || !chainOk(client, r)) continue; // this client's build can't play that mode / game
+    if (!modeOk(client, r.mode) || !runFinaleOk(client, r) || !easyOk(client, r) || !hellOk(client, r) || !chainOk(client, r) || !versusOk(client, r)) continue; // this client's build can't play that mode / game
     list.push({
       code: r.code, players: r.members.length, max: r.max || NET.MAX_PLAYERS, phase: r.phase, locked: !!r.pass,
       host: (r.members.find((m) => m.id === r.hostId) || r.members[0]).name,
-      level: r.sim ? (r.sim.hell ? r.sim.level : r.sim.levelData.level || r.sim.level) : 0, mode: r.mode, easy: r.easy || undefined, hell: r.hell || undefined, chain: r.chain || undefined,
+      level: r.sim ? (r.sim.hell ? r.sim.level : r.sim.levelData.level || r.sim.level) : 0, mode: r.mode, easy: r.easy || undefined, hell: r.hell || undefined, chain: r.chain || undefined, versus: r.versus || undefined,
     });
   }
   return list.sort((a, b) => (a.phase === 'lobby' ? 0 : 1) - (b.phase === 'lobby' ? 0 : 1) || b.players - a.players).slice(0, 30);
@@ -683,6 +704,12 @@ function joinRoom(client, room, name, pref, pass) {
   if (!easyOk(client, room)) return send(client.ws, { t: 'error', msg: `That lobby plays an easy game, which needs the latest version - ${updateHow(client)} to play it.` });
   if (!hellOk(client, room)) return send(client.ws, { t: 'error', msg: `That lobby plays hell, which needs the latest version - ${updateHow(client)} to play it.` });
   if (!chainOk(client, room)) return send(client.ws, { t: 'error', msg: `That lobby plays chained, which needs the latest version - ${updateHow(client)} to play it.` });
+  if (!versusOk(client, room)) return send(client.ws, { t: 'error', msg: `That lobby plays versus, which needs the latest version - ${updateHow(client)} to play it.` });
+  // chained versus in progress: no kitty on its own (it would have no chain); one coming back to its team, or a team the
+  // matchmaker brings in (two or more), can
+  if (room.versus && room.chain && room.phase === 'playing' && !(client.vsMove && client.vsMove.room === room) && !leftKey(room, client)) {
+    return send(client.ws, { t: 'error', msg: 'That chained versus game is in progress: join it with a team of two or more (Find opponents).' });
+  }
   if (!runFinaleOk(client, room)) return send(client.ws, { t: 'error', msg: `That game is playing the new level 9 - ${updateHow(client)} to join it.` });
   const max = room.max || NET.MAX_PLAYERS;
   if (room.members.length >= max) return send(client.ws, { t: 'error', msg: `That lobby is full (${max}/${max}).` });
@@ -702,13 +729,15 @@ function joinRoom(client, room, name, pref, pass) {
   client.margin = NET.INPUT_LEAD;
   room.members.push(client);
   if (!room.hostId) room.hostId = client.id;
+  if (room.versus) joinTeam(room, client);
   sendRoom(room);
   broadcast(room, { t: 'chat', sys: true, text: `${client.name} joined` });
   if (room.phase === 'playing') {
     // Join mid-game: spawn now; send full state (including wolves) so the newcomer is in sync.
-    const p = addPlayer(room.sim, { id: client.id, name: client.name, color: client.color });
-    restoreLeft(room, client, p);
+    const p = addPlayer(room.sim, { id: client.id, name: client.name, color: client.color, team: client.team });
+    const at = restoreLeft(room, client, p);
     chainJoin(room.sim, p);   // (chained, and not back on its old chain: a partner, beside it)
+    if (at) { p.x = at.x; p.z = at.z; }   // (versus: carried back in, it stays with its carrier)
     // Mid-victory: join the party in the goal room instead of starting alone at the far end of the final run.
     if (room.sim.state === 'victory') {
       const a = room.sim.players.length * 2.399963, r = 3.3;
@@ -734,6 +763,193 @@ function pruneLeft(room, now = Date.now()) {
   }
 }
 
+// ---- versus teams ----
+// A newcomer's team: a new one of its own (in the lobby it can ask to join another, 'team'; joining a running game it
+// plays as a team of one), unless it's back in time from a running game: then the team it had (room.left)
+function joinTeam(room, client) {
+  const back = room.phase === 'playing' && room.left && room.left.get(leftKey(room, client));
+  const moved = client.vsMove && client.vsMove.room === room && room.teams.has(client.vsMove.team) ? client.vsMove.team : 0;   // (the matchmaker: with its team)
+  client.vsMove = null;
+  client.team = moved || (back && room.teams.has(back.team) ? back.team : newTeam(room, client));
+}
+
+// ---- versus matchmaking: a versus lobby's host turns on FIND OPPONENTS (room.search). Every MATCH_EVERY_MS a searching
+// lobby is put together with another searching lobby of the same mode and chained setting (the smaller one moves into
+// the bigger, teams and their names kept; the room keeps searching for more), or, with none, it joins a running versus
+// game that was searching when it started (its teams come in as teams of their own and play on from there). Rooms must
+// fit (room.max); private lobbies only match each other's searches (their kitties chose to).
+const MATCH_EVERY_MS = 1500;
+// (the same chained setting always; the same mode unless one searches in any mode (room.searchAny): that one plays the
+// other's mode)
+const modeFits = (a, b) => a.mode === b.mode || !!a.searchAny || !!b.searchAny;
+function moveTeams(from, to) {
+  const map = new Map();
+  if (to.versus) for (const [id, t] of from.teams) {
+    const nid = to.nextTeam++;
+    to.teams.set(nid, { name: t.name, req: new Set() });
+    map.set(id, nid);
+  }
+  for (const m of from.members.slice()) {
+    if (to.versus) m.vsMove = { room: to, team: map.get(m.team) };
+    joinRoom(m, to, m.name, m.slot, to.pass);
+    if (m.room === to) send(m.ws, { t: 'chat', sys: true, text: to.versus ? 'Opponents found!' : 'Players found!' });
+    else m.vsMove = null;
+  }
+  if (from.members.length && rooms.has(from.code)) {   // (some couldn't come: an older version of the game)
+    from.search = false;
+    for (const m of from.members) send(m.ws, { t: 'chat', sys: true, text: 'Players were found, but not everyone here could join them (an older version of the game?). Searching stopped.' });
+    sendRoom(from);
+  }
+  for (const t of to.teams.values()) t.ready = false;
+  if (to.phase === 'lobby') sendRoom(to);
+}
+// a versus lobby's team with only one kitty (chained versus can't start with one: it would have no chain)
+const soloTeam = (room) => [...room.teams.keys()].some((id) => room.members.filter((m) => m.team === id).length === 1);
+// (every mode since: FIND PLAYERS in any lobby; versus ones only with versus ones, the others with the others, and the
+// same chained, easy and hell)
+const sameKind = (a, b) => !!a.versus === !!b.versus && (a.chain || '') === (b.chain || '') && !!a.easy === !!b.easy && !!a.hell === !!b.hell;
+function matchmake() {
+  const searching = [...rooms.values()].filter((r) => r.search && r.members.length);
+  const lobbies = searching.filter((r) => r.phase === 'lobby').sort((a, b) => b.members.length - a.members.length);
+  for (const r of lobbies) {
+    if (!rooms.has(r.code) || r.phase !== 'lobby') continue;   // (moved into another this round)
+    const fits = (o) => o !== r && rooms.has(o.code) && sameKind(o, r) && o.members.length + r.members.length <= Math.min(o.max || NET.MAX_PLAYERS, r.max || NET.MAX_PLAYERS);
+    // (a lobby of its own mode first; a game in progress plays its mode: the lobby joins it only in that mode or any)
+    const other = lobbies.find((o) => o.phase === 'lobby' && fits(o) && o.mode === r.mode) || lobbies.find((o) => o.phase === 'lobby' && fits(o) && modeFits(o, r))
+      || searching.find((o) => o.phase === 'playing' && o.sim && o.sim.state === 'playing' && fits(o) && (o.mode === r.mode || r.searchAny) && !(o.versus && o.chain && soloTeam(r)));   // (chained versus: no team of one)
+    if (!other) continue;
+    // who moves (and so plays the other's mode): into a running game always the lobby; of two lobbies with different modes
+    // where only one searches in any mode, that one (the other keeps the mode it picked, whatever the sizes); else the
+    // smaller group (the bigger one's mode is played)
+    const anyMoves = other.phase === 'lobby' && other.mode !== r.mode && !!r.searchAny !== !!other.searchAny;
+    const [from, to] = other.phase === 'playing' ? [r, other] : anyMoves ? (r.searchAny ? [r, other] : [other, r]) : other.members.length >= r.members.length ? [r, other] : [other, r];
+    moveTeams(from, to);
+  }
+}
+setInterval(matchmake, MATCH_EVERY_MS).unref();
+// versus: the game's kitties (ids) best team first (its points), in their order within a team (the boards list them so)
+function byTeamPoints(room, ids) {
+  const sim = room.sim, teamOf = (id) => (sim.players.find((p) => p.id === id) || {}).team;
+  const mine = (id) => { const p = sim.players.find((q) => q.id === id); return p ? scoreOf(p) : -Infinity; };   // (then within a team)
+  return ids.slice().sort((a, b) => vsOrder(sim, teamOf(a), teamOf(b)) || (teamOf(a) | 0) - (teamOf(b) | 0) || mine(b) - mine(a));
+}
+// two teams' order (as the end cards: ui.js rankOrder): more points, then more crowns, then fewer times caught; 0: a draw
+function vsOrder(sim, a, b) {
+  const A = sim.teams[a], B = sim.teams[b];
+  if (!A || !B) return (B ? 1 : 0) - (A ? 1 : 0);
+  return (vsScore(B) - vsScore(A)) || (B.crowns - A.crowns) || (A.deaths - B.deaths);
+}
+// versus over (everyone down, or the final level won): a game on everyone's account, a win for the team in 1st (a draw on
+// points: more crowns, then fewer times caught; all the same: every one of them) (once per player)
+function vsResults(room) {
+  const sim = room.sim, ids = Object.keys(sim.teams).map(Number).filter((t) => sim.players.some((p) => p.team === t));   // (teams still in it)
+  const top = ids.filter((t) => ids.every((o) => vsOrder(sim, t, o) <= 0));   // (no team ahead of it: the winners, a draw all of them)
+  for (const m of onePerPlayer(room.members.filter((x) => sim.players.some((p) => p.id === x.id)))) {
+    const p = sim.players.find((q) => q.id === m.id);
+    if (!vsCounted(room, m)) accounts.recordOnline(m.acct, { type: 'vsGame' });
+    if (p && top.includes(p.team)) accounts.recordOnline(m.acct, { type: 'vsWin' });
+  }
+}
+// leaving a versus game counts it as played (a loss) right away, once per player (room.vsPlayed: its account, browser)
+function vsCounted(room, m) {
+  const keys = [m.acct && 'a:' + m.acct, m.pid && 'p:' + m.pid].filter(Boolean), was = keys.some((k) => room.vsPlayed.has(k));
+  for (const k of keys) room.vsPlayed.add(k);
+  return was;
+}
+// ...and each one's team's place in that order (0: the winners), for the boards' │ between teams
+function teamPlaces(room, ids) {
+  const teamOf = (id) => (room.sim.players.find((p) => p.id === id) || {}).team, seen = [];
+  return ids.map((id) => { const t = teamOf(id); if (!seen.includes(t)) seen.push(t); return seen.indexOf(t); });
+}
+function newTeam(room, client) {
+  const id = room.nextTeam++;
+  room.teams.set(id, { name: cleanName('Team ' + client.name, 'Team ' + id), req: new Set() });
+  return id;
+}
+// lobby only: teams nobody is in any more go (a running game keeps them, with their points)
+function pruneTeams(room) {
+  if (!room.versus || room.phase === 'playing') return;
+  for (const id of [...room.teams.keys()]) if (!room.members.some((m) => m.team === id)) room.teams.delete(id);
+  for (const [id, t] of room.teams) for (const r of t.req) if (!room.members.some((m) => m.id === r && m.team !== id)) t.req.delete(r);   // (gone, or in it now)
+}
+// 'settings' (the host, in the lobby): another mode, normal / easy, hell, chained, versus, without making a new lobby.
+// Checked as 'create' does, and every kitty in the lobby has to be able to play it (else nothing changes and the host
+// hears who can't). Versus turned on or off: everyone a team of their own / no teams (as the versus switch)
+function settingsMsg(room, client, msg) {
+  if (!room || room.phase !== 'lobby' || room.hostId !== client.id) return;
+  const mode = GAME_MODES.includes(msg.mode) ? msg.mode : room.mode;
+  const hell = msg.hell === true;
+  if (hell && (!HELL_MODES.includes(mode) || (!hellOpenFor(client, mode) && msg.hl !== true))) return send(client.ws, { t: 'error', msg: 'Reach the final level in any mode to open hell, or clear a level of it in someone\'s lobby.' });
+  const versus = msg.versus === true && !hell;
+  const next = { mode, hell: hell || undefined, easy: msg.easy === true && !versus, chain: msg.chain === 'all' ? 'all' : msg.chain === true || undefined, versus: versus || undefined };
+  const t = { ...room, ...next };
+  const cant = room.members.filter((m) => !modeOk(m, mode) || !easyOk(m, t) || !hellOk(m, t) || !chainOk(m, t) || !versusOk(m, t));
+  if (cant.length) return send(client.ws, { t: 'error', msg: `${cant.map((m) => m.name).join(', ')} can't play that yet (an older version of the game) - pick another mode, or they can update.` });
+  const vsChanged = !!room.versus !== !!next.versus;
+  Object.assign(room, next);
+  if (vsChanged) {
+    room.teams = new Map();
+    for (const m of room.members) m.team = room.versus ? newTeam(room, m) : undefined;
+  }
+  for (const tm of room.teams.values()) tm.ready = false;   // (something changed: set to go again)
+  broadcast(room, { t: 'chat', sys: true, text: `The host changed the game to ${modeName(room)}` });
+  sendRoom(room);
+}
+// 'team': { act: 'join', id } asks to join another team ('unask' takes it back; someone in it accepts, up to TEAM_MAX),
+// 'new' a team of its own, 'name' its team's name, 'ready' (on / off: the team is set to go; someone joining or leaving
+// it takes that back) and 'accept' / 'decline' { id } someone who asked (anyone in it)
+function teamMsg(room, client, msg) {
+  if (room && room.phase === 'lobby' && (msg.act === 'search' || msg.act === 'any' || msg.act === 'versus')) {   // (the host, any lobby)
+    if (room.hostId !== client.id) return;
+    if (msg.act === 'search') room.search = !room.search;
+    else if (msg.act === 'any') room.searchAny = !room.searchAny;
+    else {   // versus on / off: on, everyone a team of their own (every kitty in the lobby has to know versus); off, no teams
+      if (!room.versus && (room.hell || room.members.some((m) => m.v < VERSUS_PROTOCOL))) return;
+      room.versus = !room.versus || undefined;
+      room.teams = new Map();
+      for (const m of room.members) m.team = room.versus ? newTeam(room, m) : undefined;
+      if (room.versus) room.easy = false;
+    }
+    sendRoom(room);
+    return;
+  }
+  if (!room || !room.versus || room.phase !== 'lobby') return;
+  const full = (id) => room.members.filter((m) => m.team === id).length >= TEAM_MAX;
+  const mine = room.teams.get(client.team);
+  if (msg.act === 'join' || msg.act === 'unask') {
+    const id = msg.id | 0, t = room.teams.get(id);
+    if (!t || id === client.team) return;
+    if (msg.act === 'unask') t.req.delete(client.id);
+    else if (t.req.size < 16 && !full(id)) t.req.add(client.id);
+    else return;
+  } else if (msg.act === 'ready') {
+    if (!mine) return;
+    mine.ready = !mine.ready;
+  } else if (msg.act === 'accept' || msg.act === 'decline') {
+    const who = room.members.find((m) => m.id === (msg.id | 0));
+    if (!mine || !who || !mine.req.has(who.id)) return;
+    mine.req.delete(who.id);
+    if (msg.act === 'accept') {
+      if (full(client.team)) return sendRoom(room);
+      const was = room.teams.get(who.team);
+      if (was) was.ready = false;
+      mine.ready = false;
+      who.team = client.team;
+      for (const x of room.teams.values()) x.req.delete(who.id);
+    }
+  } else if (msg.act === 'new') {
+    if (room.members.filter((m) => m.team === client.team).length < 2) return;   // (already on its own)
+    if (mine) mine.ready = false;
+    client.team = newTeam(room, client);
+  } else if (msg.act === 'name') {
+    const t = room.teams.get(client.team);
+    if (!t) return;
+    t.name = cleanName(msg.name, t.name);
+  } else return;
+  pruneTeams(room);
+  sendRoom(room);
+}
+
 // ---- chained lobbies ----
 // who chains up with whom: the member ids in chain order (two by two, the last three when odd; room.chain 'all': one
 // chain through everyone in this order: shared/sim.js chainGroups)
@@ -746,6 +962,7 @@ function chainOrder(room) {
 // a picks b: b takes the place of a's chain mate (who takes b's); everyone on one chain: b moves in right after a
 function chainWith(room, a, b) {
   const o = chainOrder(room);
+  if (room.versus) { const ta = room.members.find((m) => m.id === a), tb = room.members.find((m) => m.id === b); if (!ta || !tb || ta.team !== tb.team) return false; }
   if (room.chain === 'all') {
     const i = o.indexOf(a), j = o.indexOf(b);
     if (i < 0 || j < 0 || Math.abs(i - j) === 1) return false;
@@ -773,18 +990,26 @@ function rememberLeft(room, client) {
   pruneLeft(room);
   const circ = sim.circles.find((c) => c.playerId === p.id);
   room.left.set(client.tok || `ip:${client.ip}#${client.id}`, {
-    at: Date.now(), sim, level: sim.level, ip: client.ip,
-    alive: p.alive, x: p.x, z: p.z, circleT: circ ? circ.t : 0, id: p.id,   // (id: its place on its chain)
+    at: Date.now(), sim, level: sim.level, ip: client.ip, pid: client.pid || '',   // (pid: the same browser, a new tab)
+    alive: p.alive, x: p.x, z: p.z, circleT: circ ? circ.t : 0, id: p.id, team: client.team,   // (id: its place on its chain; versus: its team)
     lives: p.lives, deaths: p.deaths, rescues: p.rescues, finishes: p.finishes, crowned: p.crowned, speedMult: p.speedMult, bonus: p.bonus || 0, ran: p.ran || 0,
     goals: room.goalsFor === sim && room.goals.get(p.id) ? [...room.goals.get(p.id)] : [],   // (the unlocks' goal tally)
   });
 }
 
-function restoreLeft(room, client, p) {
-  if (!room.left) return;
+// the kitty that left which this one is (back in time): the same tab (tok), else the same browser (pid: the tab was
+// closed and the game opened again), else a downed kitty from the same IP
+const IP_REJOIN_MS = 60e3;   // (by IP alone: only this soon)
+function leftKey(room, client) {
+  if (!room.left) return null;
   pruneLeft(room);
-  let key = client.tok && room.left.has(client.tok) ? client.tok : null;
-  if (!key) for (const [k, r] of room.left) if (!r.alive && r.ip === client.ip) { key = k; break; }
+  if (client.tok && room.left.has(client.tok)) return client.tok;
+  if (client.pid) for (const [k, r] of room.left) if (r.pid === client.pid) return k;
+  for (const [k, r] of room.left) if (!r.alive && r.ip === client.ip && Date.now() - r.at < IP_REJOIN_MS) return k;
+  return null;
+}
+function restoreLeft(room, client, p) {
+  const key = leftKey(room, client);
   if (!key) return;
   const r = room.left.get(key);
   room.left.delete(key);
@@ -795,11 +1020,20 @@ function restoreLeft(room, client, p) {
     room.goals.set(p.id, new Set(r.goals));
   }
   if (r.sim === sim) chainRejoin(sim, r.id, p);   // chained: back on its chain, where it left
+  // chained: its partner joined another group meanwhile: chained up with it again (split off once both sides have two)
+  if (r.sim === sim && !sim.chains.some((c) => c.includes(p.id)) && mergeReturn(sim, r.id, p)) {
+    if (sim.versus) for (const m of room.members) { const q = sim.players.find((x) => x.id === m.id); if (q) m.team = q.team; }
+    sendRoom(room);
+    return { x: p.x, z: p.z };
+  }
+  // versus: with its team, at the one furthest behind; picked up and carried: up, where its carrier is (that's its revive)
+  const carried = r.sim === sim && vsReturn(sim, r.id, p);
   // a new level (or the victory party) revives everyone anyway
-  if (!r.alive && r.level === sim.level && sim.state !== 'victory') {
+  if (!r.alive && !carried && r.level === sim.level && sim.state !== 'victory') {
     Object.assign(p, { alive: false, x: r.x, z: r.z, vx: 0, vz: 0, moving: false, inCenter: false, invuln: 0, shield: 0, speedMult: 1 });
     sim.circles.push({ playerId: p.id, x: r.x, z: r.z, t: r.circleT });
   }
+  return carried ? { x: p.x, z: p.z } : null;   // (where it has to stay: joinRoom puts it back there after chainJoin)
 }
 
 function leaveRoom(client) {
@@ -808,9 +1042,12 @@ function leaveRoom(client) {
   client.room = null;
   room.members = room.members.filter((m) => m !== client);
   rememberLeft(room, client);
-  if (room.sim) { chainLeave(room.sim, client.id); removePlayer(room.sim, client.id); }   // (chained: off its chain, or an anchor)
+  if (room.sim && room.sim.versus && room.phase === 'playing' && room.sim.state === 'playing' && room.sim.players.some((p) => p.id === client.id) && !vsCounted(room, client)) accounts.recordOnline(client.acct, { type: 'vsGame' });
+  if (room.sim) { chainLeave(room.sim, client.id); vsLeave(room.sim, client.id); removePlayer(room.sim, client.id); }   // (chained: off its chain, or an anchor; versus: a catch, a spot to pick up)
   sendChains(room);
   if (room.members.length === 0) { rooms.delete(room.code); return; }
+  if (room.versus && room.phase === 'lobby' && room.teams.has(client.team)) room.teams.get(client.team).ready = false;   // (one fewer: not set any more)
+  pruneTeams(room);
   if (room.hostId === client.id) room.hostId = room.members[0].id; // next in join order
   partyOver(room);
   sendRoom(room);
@@ -828,7 +1065,7 @@ function startMsg(room, withWolves) {
     t: 'start', seed: sim.seed, mode: sim.mode, level: sim.level, tick: room.tick, lt: sim.enemyTicks, rf: sim.finales | 0, hell: sim.hell ? 1 : undefined, hw: sim.waves ? 1 : undefined,
     easy: sim.easy ? 1 : undefined, rt: sim.retries || undefined,
     st: sim.state, vic: room.victory || null, // mid-game joiners: the run may already be won (the 'victory' event went out before)
-    players: sim.players.map((p) => ({ id: p.id, name: p.name, color: p.color })),
+    players: sim.players.map((p) => ({ id: p.id, name: p.name, color: p.color, ...(sim.versus ? { team: p.team } : {}) })),
     wolves: withWolves ? serializeEnemies(sim.enemies) : null,
     lh: levelHash(sim.levelData),   // level fingerprint: a client that differs takes our items and wolves (main.js)
     it: sim.items.filter((i) => i.taken).map((i) => i.id), ct: sim.crownTaken ? 1 : 0, // mid-game joiners: already picked up
@@ -837,7 +1074,13 @@ function startMsg(room, withWolves) {
     xi: sim.chest && sim.chest.open ? sim.items.filter((i) => i.id >= 1000).map((i) => [i.id, i.type, i.x, i.z, i.mega ? 1 : 0]) : undefined,
     cp: sim.checkpointsHit.slice(),   // ...and the checkpoints already reached (a repaired medic checkpoint shows repaired)
     cn: sim.chain ? { c: sim.chains, a: sim.anchors, all: sim.chainAll ? 1 : undefined } : undefined,   // chained: the chains and anchors (shared/sim.js chainLinks)
+    vs: sim.versus ? vsTeams(room) : undefined,   // versus: the teams and their points (players carry their team)
   };
+}
+
+// versus: every team's name and points so far: [id, name, dist, cur, crowns, deaths, revives] (shared/sim.js vsTeam)
+function vsTeams(room) {
+  return Object.entries(room.sim.teams).map(([id, t]) => [+id, (room.teams.get(+id) || {}).name || 'Team ' + id, r3(t.dist), r3(t.cur), t.crowns, t.deaths, t.revives]);
 }
 
 function startGame(room, startLevel = 1) {
@@ -848,11 +1091,13 @@ function startGame(room, startLevel = 1) {
   room.overAt = 0;
   room.victory = null;
   room.left = new Map();
+  room.joinVotes = new Map();
+  room.vsPlayed = new Set();
   const seed = hashSeed(Date.now(), Math.random(), room.code) >>> 0;
   room.sim = createSim({
     seed, startLevel: room.hell ? startLevel : stageStep(room.mode, finalesOf(room.members), startLevel), mode: room.mode, finales: finalesOf(room.members), easy: !!room.easy,
-    hell: !!room.hell, waves: !!room.hell && room.members.every((m) => m.v >= HELL_WAVES_PROTOCOL), chain: room.chain || false,
-    players: (room.chain ? chainOrder(room).map((id) => room.members.find((m) => m.id === id)) : room.members).map((m) => ({ id: m.id, name: m.name, color: m.color })),   // (chained: in chain order)
+    hell: !!room.hell, waves: !!room.hell && room.members.every((m) => m.v >= HELL_WAVES_PROTOCOL), chain: room.chain || false, versus: !!room.versus,
+    players: (room.chain ? chainOrder(room).map((id) => room.members.find((m) => m.id === id)) : room.members).map((m) => ({ id: m.id, name: m.name, color: m.color, team: m.team })),   // (chained: in chain order)
   });
   for (const m of room.members) { m.inputs.clear(); m.lastInput = null; }
   sendRoom(room);
@@ -881,8 +1126,9 @@ function stepRoom(room) {
       e.lh = levelHash(sim.levelData);
       pregenNext(sim); // next level off the event loop (makeLevel picks it up)
     }
-    else if (e.type === 'gameOver') room.overAt = Date.now() + GAMEOVER_TO_LOBBY_MS;
+    else if (e.type === 'gameOver') { room.overAt = Date.now() + GAMEOVER_TO_LOBBY_MS; if (sim.versus) vsResults(room); }
     else if (e.type === 'victory') {
+      if (sim.versus) vsResults(room);
       // final state: the sim keeps stepping (snapshots carry st 'victory') until the room goes back to the lobby
       room.victory = e;
       room.overAt = Date.now() + VICTORY_TO_LOBBY_MS;
@@ -898,7 +1144,7 @@ function stepRoom(room) {
 // down by the others ('votekill'): a majority of the other kitties that aren't standing still themselves. It goes down
 // as if caught (a revive circle, so it can be revived), but it isn't counted as caught. Snapshots carry each kitty's
 // afk at the end of its array: 0, or 1 + its votes so far (main.js shows the vote button).
-const AFK_TICKS = 25 * 60;   // (25 s)
+const AFK_TICKS = 30 * 60;   // (30 s)
 function trackAfk(room) {
   const sim = room.sim;
   if (room.afkFor !== sim) { room.afkFor = sim; room.afk = new Map(); }
@@ -916,6 +1162,74 @@ function afkNeed(room, id) {
   const voters = room.sim.players.filter((p) => p.id !== id && !isAfk(room, p.id)).length;
   return Math.floor(voters / 2) + 1;
 }
+// Chained: a kitty left on its own on its chain (sim.js loneOf) joins another group when both want it: more than half of
+// that group (its chain; versus: its team) votes for it standing on its ring, body or it ('joinvote'), and it says yes
+// ('joinask': asking first, near one of them, or saying yes to their votes; down too). Then groupJoin (down: back up).
+// The group hears of it in the chat. room.joinVotes: 'lone id:group' -> { votes: Set of voter ids, agree, to (one of the
+// group) }; snapshots carry them (jv).
+const JOIN_TOUCH = CFG.REVIVE_RADIUS + CFG.KITTY_RADIUS, JOIN_ASK = 6;
+const groupOf = (sim, p) => (sim.versus ? sim.players.filter((q) => q.team === p.team) : (sim.chains.find((c) => c.includes(p.id)) || [p.id]).map((id) => sim.players.find((q) => q.id === id)).filter(Boolean));
+const groupKey = (sim, p) => (sim.versus ? 't' + p.team : 'c' + Math.min(...groupOf(sim, p).map((q) => q.id)));
+const groupName = (room, sim, p) => (sim.versus ? `${(room.teams.get(p.team) || {}).name || 'their team'}` : `${p.name}'s chain`);
+function joinEntry(room, sim, L, T) {
+  room.joinVotes ||= new Map();
+  const key = L.id + ':' + groupKey(sim, T);
+  let e = room.joinVotes.get(key);
+  if (!e) room.joinVotes.set(key, e = { votes: new Set(), agree: false, to: T.id });
+  const group = groupOf(sim, T).filter((q) => q.id !== L.id);
+  for (const v of e.votes) if (!group.some((q) => q.id === v)) e.votes.delete(v);   // (voters no longer in the group)
+  return { key, e, group, need: Math.floor(group.length / 2) + 1 };
+}
+function joinDone(room, sim, L, T, key, e, group, need) {
+  room.snapNow = true;
+  const tell = (text) => { for (const m of room.members) if (group.some((q) => q.id === m.id)) send(m.ws, { t: 'chat', sys: true, text }); };
+  const word = sim.versus ? 'team' : 'chain';
+  if (e.votes.size < need || !e.agree) return tell;
+  room.joinVotes.delete(key);
+  const by = sim.players.find((q) => q.id === [...e.votes][0]) || T;
+  if (!groupJoin(sim, L.id, by.id)) return tell;
+  for (const m of room.members) { const p = sim.players.find((q) => q.id === m.id); if (p && sim.versus) m.team = p.team; }
+  tell(`⛓ ${L.name} joined your ${word}`);
+  const lm = room.members.find((m) => m.id === L.id);
+  if (lm) send(lm.ws, { t: 'chat', sys: true, text: `⛓ You joined ${groupName(room, sim, by)}` });
+  sendChains(room);
+  sendRoom(room);
+  return null;
+}
+// one of the group, standing on the lone kitty's ring, body or it: a vote for it
+function joinVote(room, client, id) {
+  const sim = room.sim;
+  if (!sim || !sim.chain || room.phase !== 'playing' || sim.state !== 'playing') return;
+  const V = sim.players.find((p) => p.id === client.id), L = sim.players.find((p) => p.id === id), lg = loneOf(sim, id);
+  if (!V || !V.alive || !L || !lg || lg.includes(V.id)) return;
+  const spots = [L, ...lg.map((o) => sim.anchors[o]).filter(Boolean)];
+  if (!spots.some((s) => Math.hypot(V.x - s.x, V.z - s.z) < JOIN_TOUCH)) return;
+  const { key, e, group, need } = joinEntry(room, sim, L, V);
+  if (e.votes.has(V.id)) return;
+  e.votes.add(V.id);
+  const tell = joinDone(room, sim, L, V, key, e, group, need);
+  if (!tell) return;
+  const word = sim.versus ? 'team' : 'chain';
+  tell(`⛓ ${V.name} votes to add ${L.name} to your ${word} (${e.votes.size}/${need})` + (e.votes.size < need ? `: run onto ${L.name}'s ring to vote too` : '') + (e.agree ? '' : `, waiting for ${L.name} to say yes`));
+  const lm = room.members.find((m) => m.id === L.id);
+  if (lm && !e.agree) send(lm.ws, { t: 'chat', sys: true, text: `⛓ ${groupName(room, sim, V)} want you to join them: press JOIN to say yes` });
+}
+// the lone kitty: asks to join (or says yes to) the group of kitty `to` (near it, or that group voting for it already)
+function joinAsk(room, client, to) {
+  const sim = room.sim;
+  if (!sim || !sim.chain || room.phase !== 'playing' || sim.state !== 'playing') return;
+  const L = sim.players.find((p) => p.id === client.id), T = sim.players.find((p) => p.id === to), lg = L && loneOf(sim, L.id);
+  if (!L || !T || !lg || lg.includes(T.id)) return;
+  const spots = [L, ...lg.map((o) => sim.anchors[o]).filter(Boolean)];
+  const was = room.joinVotes && room.joinVotes.get(L.id + ':' + groupKey(sim, T));
+  if (!(was && was.votes.size) && !spots.some((s) => Math.hypot(T.x - s.x, T.z - s.z) < JOIN_ASK)) return;   // (asking first: one of them near)
+  const { key, e, group, need } = joinEntry(room, sim, L, T);
+  if (e.agree) return;
+  e.agree = true;
+  const tell = joinDone(room, sim, L, T, key, e, group, need);
+  if (tell) tell(`⛓ ${L.name} asks to join your ${sim.versus ? 'team' : 'chain'} (${e.votes.size}/${need} voted): run onto ${L.name}'s ring or body to vote`);
+}
+
 function voteKill(room, client, id) {
   const sim = room.sim;
   if (!sim || room.phase !== 'playing' || id === client.id || !isAfk(room, id) || isAfk(room, client.id)) return;
@@ -968,12 +1282,13 @@ function countForAccounts(room, events) {
       }
       for (const id of once(sim.players.map((p) => p.id))) accounts.recordOnline(subOf(id), ev, easy);
       // level boards: the team's time for everyone in it (one per player); the secret level's board opens for whoever reaches it
-      const team = once(sim.players.map((p) => p.id)), run = runId();   // (run: the team's time shows once, with everyone)
-      for (const id of team) {
+      const team = sim.versus ? byTeamPoints(room, once(sim.players.map((p) => p.id))) : byScore(room, once(sim.players.map((p) => p.id))), run = runId();   // (run: the team's time shows once, with everyone, best scorer first; versus: the team with the most points first)
+      const places = sim.versus ? teamPlaces(room, team) : null;
+      for (const [order, id] of team.entries()) {
         const m = memberOf(id), p = sim.players.find((q) => q.id === id);
         if (!m) continue;
         const who = { acct: m.acct, pid: m.pid, fid: m.fid, name: (p && p.name) || m.name, color: p ? p.color : m.color };
-        if (e.type === 'levelClear') levels.record(who, { local: false, easy, mode: room.mode, level, time: ev.time, team: team.length, run, chain: chainedGame(room) });
+        if (e.type === 'levelClear') levels.record(who, { local: false, easy, mode: room.mode, level, time: ev.time, team: team.length, run, chain: chainedGame(room), order, ...(sim.versus ? { vs: true, tm: places[order] } : {}) });
         else if (level === levels.SECRET_LEVEL) levels.reach(who);
       }
       if (e.type === 'levelStart' && level === SKATE_FINAL_LEVEL && !e.retry) for (const id of team) featDone(id, 'r9');   // (hell opens)
@@ -1053,7 +1368,11 @@ function sendSnapshot(room) {
     //  freeTurn, ran (the score's distance: maps run), afk (0, or 1 + its votes to kill)] (new fields go at the end: older clients ignore them)
     p: sim.players.map((p) => [p.id, r3(p.x), r3(p.z), r3(p.vx), r3(p.vz), r3(p.heading), p.alive ? 1 : 0, p.inCenter ? 1 : 0,
       p.lives, r3(p.speedMult), r3(p.invuln), r3(p.shield), p.deaths, p.rescues, Math.round((margins.get(p.id) ?? 0) * 10) / 10, p.finishes || 0, p.waitRelease ? 1 : 0,
-      p.crowned ? 1 : 0, p.bonus || 0, p.freeTurn ? 1 : 0, r3(p.ran || 0), isAfk(room, p.id) ? 1 + room.afk.get(p.id).votes.size : 0]),
+      p.crowned ? 1 : 0, p.bonus || 0, p.freeTurn ? 1 : 0, r3(p.ran || 0), isAfk(room, p.id) ? 1 + room.afk.get(p.id).votes.size : 0, ...(sim.versus ? [p.team] : [])]),   // (versus: its team)
+    vs: sim.versus ? vsTeams(room) : undefined,
+    vl: sim.versus ? Object.entries(sim.vsLeft).map(([id, s]) => [+id, r3(s.x), r3(s.z), s.team, s.color, s.by || 0]) : undefined,   // (kitties that left: where, their team and colour, who carries them)
+    jv: sim.chain && room.joinVotes && room.joinVotes.size ? [...room.joinVotes].map(([k, v]) => [+k.split(':')[0], k.split(':')[1], v.votes.size, v.agree ? 1 : 0, v.to]) : undefined,   // (chained: joining up: [the lone kitty's id, group, votes, it said yes, one of the group])
+    ad: sim.versus && sim.chain ? Object.entries(sim.anchors).filter(([, a]) => a.drag).map(([id, a]) => [+id, r3(a.x), r3(a.z)]) : undefined,   // (chained versus: bodies dragged on a chain, where they are now)
     lw: sim.lastWinner || 0, ct: sim.crownTaken ? 1 : 0,
     it: sim.items.filter((i) => i.taken).map((i) => i.id),
     c: sim.circles.map((c) => [c.playerId, r3(c.x), r3(c.z), r3(c.t)]),
@@ -1236,7 +1555,9 @@ wss.on('connection', (ws, req) => {
         if (hell && !hellOpenFor(client, mode) && msg.hl !== true) return send(ws, { t: 'error', msg: `Reach the final level in any mode to open this, or clear a level of it in someone's lobby.` });
         const r = { code: makeCode(), mode, hell: hell || undefined, easy: msg.easy === true && client.v >= (hell ? EASY_HELL_PROTOCOL : EASY_PROTOCOL), chain: client.v >= CHAIN_PROTOCOL ? (msg.chain === 'all' ? 'all' : msg.chain === true || undefined) : undefined, max: Math.max(2, Math.min(NET.MAX_PLAYERS, maxReq)), pass: cleanPass(msg.password), by: client.ipk,
           members: [], hostId: 0, phase: 'lobby', sim: null, tick: 0, pending: [], overAt: 0, victory: null,
-          left: new Map() }; // tab token -> state of a kitty that left this game (reconnect grace)
+          left: new Map(), // tab token -> state of a kitty that left this game (reconnect grace)
+          versus: (msg.versus === true && client.v >= VERSUS_PROTOCOL && !hell) || undefined, teams: new Map(), nextTeam: 1 };   // (versus: no hell, no easy)
+        if (r.versus) r.easy = false;
         stats.lobbyCreated();
         rooms.set(r.code, r);
         joinRoom(client, r, msg.name, msg.color, r.pass);
@@ -1259,12 +1580,26 @@ wss.on('connection', (ws, req) => {
         break;
       case 'start':
         if (room && room.chain && room.members.length < 2 && room.hostId === client.id) { send(ws, { t: 'error', msg: 'A chained game needs at least two kitties.' }); break; }
+        if (room && room.versus && room.phase === 'lobby' && new Set(room.members.map((m) => m.team)).size < 2 && room.hostId === client.id) { send(ws, { t: 'error', msg: 'Versus needs at least two teams.' }); break; }
+        if (room && room.versus && room.chain && room.phase === 'lobby' && soloTeam(room) && room.hostId === client.id) { send(ws, { t: 'error', msg: 'Chained versus: every team needs at least two kitties (a kitty on its own would have no chain).' }); break; }
         if (room && room.hostId === client.id && room.phase === 'lobby') {
           startGame(room, TEST_HOOKS && Number.isFinite(msg.level) ? Math.max(1, Math.min(SKATE_FINAL_LEVEL, msg.level | 0)) : 1);
         }
         break;
+      case 'settings':   // the host, in the lobby: another mode / options (settingsMsg)
+        settingsMsg(room, client, msg);
+        break;
+      case 'team':   // versus lobby: join / make / name a team
+        teamMsg(room, client, msg);
+        break;
       case 'chainwith':   // chained lobby: chain up with that kitty
         if (room && room.chain && room.phase === 'lobby' && chainWith(room, client.id, msg.id | 0)) sendRoom(room);
+        break;
+      case 'joinvote':   // chained: vote a kitty left on its own into your group (standing on its ring, body or it)
+        if (room) joinVote(room, client, msg.id | 0);
+        break;
+      case 'joinask':   // chained: a kitty on its own asks to join (or says yes to) the group of kitty msg.to
+        if (room) joinAsk(room, client, msg.to | 0);
         break;
       case 'votekill':   // vote to knock down a kitty that has stood still (AFK) for a while
         if (room) voteKill(room, client, msg.id | 0);

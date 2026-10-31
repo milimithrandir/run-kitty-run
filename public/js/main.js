@@ -3,7 +3,7 @@ import { CFG, PLAYER_COLORS, PLAYER_NAMES, NET, LATEST_FV, SKATE_FINAL_LEVEL, HE
 import { hashSeed } from './shared/rng.js';
 import { collideCircle, onIce, inTree, levelHash } from './shared/maze.js';
 import { updateEnemies, nearestEnemyDist, applyEnemyState, turnIn, turnedAgo } from './shared/enemies.js';
-import { createSim, stepSim, predictPlayer, loadLevel, CHAIN_SOFT, CHAIN_LEN, chainLinks } from './shared/sim.js';
+import { createSim, stepSim, predictPlayer, loadLevel, CHAIN_SOFT, CHAIN_LEN, chainLinks, vsScore } from './shared/sim.js';
 import { hellWaves, WAVE_SPEED } from './shared/waves.js';
 import { pregenNext } from './levelpregen.js';
 import { ghostMaterial, disposeModel, createKittyModel, createWolfRig, newWolfState, createItemModel, createReviveCircleModel, createPortalModel, createCrownPickupModel, createGiantFishModel, createChestModel } from './models.js';
@@ -15,7 +15,7 @@ import { createAuraTrail } from './auratrail.js';
 import { createPawPrints } from './pawprints.js';
 import { medicLook, slotMetal } from './shared/unlocks.js';
 import { createAudio } from './audio.js';
-import { createUI } from './ui.js';
+import { createUI, rankOrder } from './ui.js';
 import { createNet, progressId } from './net.js';
 import { createLobbyUI } from './lobby.js';
 import { createPadNav } from './padnav.js';
@@ -76,7 +76,9 @@ const lighting = setupLighting(scene);
 const effects = createEffects(scene);
 const audio = createAudio();
 const ui = createUI(document.getElementById('ui'));
-ui.onVoteKill((id) => { if (online.playing && !online.voted.has(id)) { online.voted.add(id); net.send({ t: 'votekill', id }); audio.play('click'); } });
+// vote to kill a kitty standing still: from its card, or the spectate bar while watching it (updateWatchLabel)
+function voteKill(id) { if (online.playing && !online.voted.has(id)) { online.voted.add(id); net.send({ t: 'votekill', id }); audio.play('click'); } }
+ui.onVoteKill(voteKill);
 
 // Soundtrack: a playlist of mp3s next to index.html, played one after the other on repeat, in a shuffled order (a new
 // one every visit and every time round, so the songs don't always come in the same order; the settings' Shuffle switch,
@@ -886,8 +888,10 @@ function handleEvents(events) {
         const p = playerById(ev.playerId);
         if (mine(ev.playerId)) haptic('heavy');
         effects.deathPoof(ev.x, ev.z, p ? p.color : 0xffffff);
-        effects.shake(0.55);
-        audio.play('death', { pan: panFor(ev.x) });
+        // (versus: another team's kitty: your cat giggles at it, no shake, so it doesn't sound like one of yours)
+        const foe = sim.versus && p && p.team !== (sim.players.find((q) => q.id === online.me) || {}).team;
+        if (!foe) effects.shake(0.55);
+        audio.play(foe ? 'foeSnickerD' : 'death', { pan: panFor(ev.x) });
         const alive = sim.players.filter((q) => q.alive).length;
         if (p && alive > 0) downToast(p);
         break;
@@ -1050,9 +1054,11 @@ function handleEvents(events) {
 
 // haptics: only for your own kitty online; every kitty on this device offline
 function mine(id) { return !online.playing || id === online.me; }
-// one 'down' toast for everyone who's down, updated as more go down (not one per kitty)
+// one 'down' toast for everyone who's down, updated as more go down (not one per kitty); versus: your own team's only
 function downToast(p) {
-  const down = sim.players.filter((q) => !q.alive), others = down.filter((q) => q.id !== p.id);
+  const team = sim.versus ? (sim.players.find((q) => q.id === online.me) || {}).team : undefined;
+  if (sim.versus && p.team !== team) return;
+  const down = sim.players.filter((q) => !q.alive && (!sim.versus || q.team === team)), others = down.filter((q) => q.id !== p.id);
   const text = !others.length ? `${p.name} is down! Touch their circle to revive`
     : down.length === 2 ? `${p.name} and ${others[0].name} are down!` : `${down.length} kitties are down!`;
   ui.toast(text, hexCss(p.color), 'down');
@@ -1220,6 +1226,13 @@ function shareRun(win, time) {
   });
 }
 
+// a kitty's scoreboard score: +1 per friend saved, -1 per time caught, up to 20 per map for how far it ran itself (p.ran,
+// sim.js trackRun), +5 per win (the crown); from an older server (no p.ran) the old +20 per win
+function playerScore(p) {
+  const dist = p.ran === undefined ? 0 : Math.round(20 * p.ran), crownPts = (p.ran === undefined ? 20 : 5) * (p.finishes || 0);
+  return (p.rescues || 0) + (p.bonus || 0) - (p.deaths || 0) + dist + crownPts;
+}
+
 function showVictoryScreen() {
   const ev = victory.ev;
   const by = ev ? playerById(ev.by) : null;
@@ -1231,6 +1244,10 @@ function showVictoryScreen() {
     fish: view && view.fish ? Math.floor(view.fish.eaten() * 100) : undefined,
     first: by ? { name: by.name, color: by.color } : null,
     players: sim.players.map((p) => ({ name: p.name, color: p.color, first: !!by && p.id === by.id })),
+    // the kitties by their score (the top 3 and you, the rest behind "+N more": ui.js rankHTML)
+    ranking: sim.players.map((p) => ({ name: p.name, color: p.color, score: playerScore(p), crowns: p.finishes || 0, caught: p.deaths || 0, me: wasOnline && p.id === online.me }))
+      .sort(rankOrder),
+    ...(sim.versus ? { versus: vsRanking() } : {}),   // (versus: the teams instead)
   };
   const buttons = wasOnline
     ? [{ label: 'BACK TO LOBBY', onClick: () => backToLobby() }]
@@ -1471,25 +1488,91 @@ function updateWatchBtn() {
 }
 const FINE_POINTER = typeof matchMedia === 'function' && matchMedia('(pointer: fine)').matches;
 let watchEl = null, watchNameEl = null, watchShown = '';
+// Chained (online), joining up (server.js joinVote / joinAsk): one button. Standing on a kitty left on its own on its chain
+// (its ring, body or it; not on your chain): vote it into your group (more than half of your chain, versus your team).
+// Being that kitty (down too): say yes to a group voting for you, or ask to join one with a kitty of it near you. It
+// joins once both are there; the snapshots carry the votes (online.jv: [its id, group, votes, it said yes, one of them])
+let joinEl = null, joinShown = '';
+const JOIN_TOUCH = CFG.REVIVE_RADIUS + CFG.KITTY_RADIUS, JOIN_ASK = 6;
+function joinGroup(p) {
+  const mine = sim.chains.find((c) => c.includes(p.id)) || [p.id];
+  const group = sim.versus ? sim.players.filter((q) => q.team === p.team) : mine.map(playerById).filter(Boolean);
+  return { group, key: sim.versus ? 't' + p.team : 'c' + Math.min(...group.map((q) => q.id)), need: Math.floor(group.length / 2) + 1,
+    name: sim.versus ? (sim.vsNames && sim.vsNames[p.team]) || 'their team' : p.name + "'s chain" };
+}
+function updateJoinBtn() {
+  const me = online.playing && mode === 'play' && sim && sim.chain && sim.state === 'playing' ? playerById(online.me) : null;
+  let text = '', act = null;
+  const myLone = me && sim.chains.find((g) => g.includes(me.id) && g.length > 1 && g.filter(playerById).length === 1);
+  if (me && myLone) {
+    // its own: a group voting for it (say yes), else one of another group near it (ask)
+    const jv = (online.jv || []).filter(([id]) => id === me.id);
+    const spots = [me, ...myLone.map((o) => sim.anchors[o]).filter(Boolean)];
+    const near = sim.players.find((q) => q.alive && !myLone.includes(q.id) && spots.some((s) => Math.hypot(q.x - s.x, q.z - s.z) < JOIN_ASK));
+    const e = jv.find((v) => !v[3]) || jv[0], T = e ? playerById(e[4]) : near;
+    if (T) {
+      const g = joinGroup(T), n = e ? e[2] : 0, asked = !!(e && e[3]);
+      text = asked ? `✓ ASKED: ${g.name.toUpperCase()} ${n}/${g.need}` : (n ? `⛓ JOIN ${g.name.toUpperCase()}? ${n}/${g.need}` : `⛓ ASK TO JOIN ${g.name.toUpperCase()}`);
+      act = asked ? null : { t: 'joinask', to: T.id };
+    }
+  } else if (me && me.alive) {
+    for (const g of sim.chains) {
+      const here = g.map(playerById).filter(Boolean);
+      if (g.includes(me.id) || here.length !== 1 || g.length < 2) continue;
+      const spots = [here[0], ...g.map((o) => sim.anchors[o]).filter(Boolean)];
+      if (!spots.some((s) => Math.hypot(me.x - s.x, me.z - s.z) < JOIN_TOUCH)) continue;
+      const L = here[0], mg = joinGroup(me), v = (online.jv || []).find(([id, k]) => id === L.id && k === mg.key), n = v ? v[2] : 0;
+      online.joinVoted ||= new Set();
+      const voted = online.joinVoted.has(L.id + ':' + mg.key) && n > 0;
+      text = (voted ? '✓ VOTED' : `⛓ ADD ${L.name.toUpperCase()} TO YOUR ${sim.versus ? 'TEAM' : 'CHAIN'}`) + (mg.need > 1 || n ? ` ${n}/${mg.need}` : '') + (v && !v[3] ? ' (waiting for them)' : '');
+      act = voted ? null : { t: 'joinvote', id: L.id, mark: L.id + ':' + mg.key };
+      break;
+    }
+  }
+  if (text && !joinEl) {
+    joinEl = document.createElement('button');
+    joinEl.style.cssText = 'position:fixed;left:50%;bottom:27%;transform:translateX(-50%);z-index:5;height:38px;padding:0 16px;border:0;border-radius:999px;' +
+      'background:linear-gradient(180deg,#c9b6ff,#8f6bff);color:#fff;font:800 14px system-ui,sans-serif;cursor:pointer;touch-action:manipulation;white-space:nowrap;box-shadow:0 3px 0 #3a1650;';
+    joinEl.addEventListener('pointerdown', (e) => e.stopPropagation());
+    joinEl.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation(); joinEl.blur();
+      const a = joinEl.act;
+      if (!a) return;
+      if (a.mark) { online.joinVoted ||= new Set(); online.joinVoted.add(a.mark); }
+      net.send(a.t === 'joinask' ? { t: 'joinask', to: a.to } : { t: 'joinvote', id: a.id });
+      audio.play('click');
+    });
+    document.body.appendChild(joinEl);
+  }
+  if (joinEl) { joinEl.act = act; joinEl.style.opacity = act ? '1' : '0.7'; joinEl.style.cursor = act ? 'pointer' : 'default'; }
+  if (text === joinShown) return;
+  joinShown = text;
+  if (joinEl) { joinEl.textContent = text; joinEl.style.display = text ? '' : 'none'; }
+}
+
 function updateWatchLabel() {
   const p = online.playing && mode === 'play' && watchId != null && sim.state !== 'gameover' ? playerById(watchId) : null;
   const multi = !!p && watchCandidates().length > 1;
   const hint = !multi || !FINE_POINTER ? '' : meDown() ? '  (← → to switch)' : `  (${keyName(key('watch'))} to switch · ${keyName(key('back'))} to go back)`;
-  const shown = p ? p.id + '|' + p.name + '|' + multi + '|' + hint : '';
+  // the kitty watched standing still (AFK): vote to kill it from here (the only place a vote starts; then everyone sees
+  // it under the top middle, ui.js paintVotes)
+  const h = p && p.afk ? hudPlayers.find((q) => q && q.id === p.id) : null;
+  const vote = h && !h.you && h.canVote ? (h.voted ? '✓ VOTED' : '💀 VOTE KNOCK DOWN') + (h.afkVotes ? ` ${h.afkVotes}/${h.afkNeed}` : '') : '';
+  const shown = p ? p.id + '|' + p.name + '|' + multi + '|' + hint + '|' + vote + '|' + !!(h && h.canVote && !h.voted) : '';
   if (shown === watchShown) return;
   watchShown = shown;
   if (!watchEl) {
     watchEl = document.createElement('div');
     watchEl.style.cssText = 'position:fixed;left:50%;bottom:18%;transform:translateX(-50%);display:flex;align-items:center;gap:4px;' +
       'padding:2px;border-radius:999px;background:rgba(0,0,0,0.45);color:#fff;font:600 14px system-ui,sans-serif;' +
-      'z-index:5;user-select:none;-webkit-user-select:none;white-space:nowrap;touch-action:manipulation;';
+      'z-index:5;user-select:none;-webkit-user-select:none;white-space:nowrap;touch-action:manipulation;max-width:calc(100vw - 16px);';
     const mkBtn = (label, dir, title) => {
       const b = document.createElement('button');
       b.textContent = label;
       b.title = title;
       b.setAttribute('aria-label', title);
       b.style.cssText = 'width:40px;height:40px;border:0;border-radius:50%;background:rgba(255,255,255,0.18);color:#fff;' +
-        'font:700 24px/1 system-ui,sans-serif;cursor:pointer;padding:0;touch-action:manipulation;';
+        'font:700 24px/1 system-ui,sans-serif;cursor:pointer;padding:0;touch-action:manipulation;flex:none;';
       b.addEventListener('pointerdown', (e) => e.stopPropagation());
       b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); cycleWatch(dir); b.blur(); });
       return b;
@@ -1497,13 +1580,25 @@ function updateWatchLabel() {
     watchEl.prevBtn = mkBtn('‹', -1, 'Previous kitty');
     watchEl.nextBtn = mkBtn('›', 1, 'Next kitty');
     watchNameEl = document.createElement('span');
-    watchNameEl.style.cssText = 'padding:4px 10px;pointer-events:none;';
-    watchEl.append(watchEl.prevBtn, watchNameEl, watchEl.nextBtn);
+    watchNameEl.style.cssText = 'padding:4px 10px;pointer-events:none;min-width:0;overflow:hidden;text-overflow:ellipsis;';
+    watchEl.voteBtn = document.createElement('button');
+    watchEl.voteBtn.style.cssText = 'height:32px;margin:0 4px;padding:0 12px;border:0;border-radius:999px;background:linear-gradient(180deg,#ff6b8a,#d63c6a);color:#fff;' +
+      'font:800 13px system-ui,sans-serif;cursor:pointer;touch-action:manipulation;white-space:nowrap;flex:none;';
+    watchEl.voteBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+    watchEl.voteBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (watchEl.voteId != null) voteKill(watchEl.voteId); watchEl.voteBtn.blur(); });
+    watchEl.append(watchEl.prevBtn, watchNameEl, watchEl.voteBtn, watchEl.nextBtn);
     document.body.appendChild(watchEl);
   }
   watchNameEl.textContent = p ? 'Watching ' + (p.id === online.me ? 'your kitty' : p.name) + hint : '';
   watchEl.prevBtn.style.display = watchEl.nextBtn.style.display = multi ? '' : 'none';
-  watchEl.style.pointerEvents = multi ? 'auto' : 'none';
+  const canVote = !!(h && h.canVote && !h.voted);
+  watchEl.voteId = canVote ? p.id : null;
+  watchEl.voteBtn.textContent = vote;
+  watchEl.voteBtn.style.display = vote ? '' : 'none';
+  watchEl.voteBtn.style.opacity = canVote ? '1' : '0.6';
+  watchEl.voteBtn.style.cursor = canVote ? 'pointer' : 'default';
+  watchEl.voteBtn.title = canVote ? `${p.name} has been standing still: vote to knock them down (they can be revived)` : '';
+  watchEl.style.pointerEvents = multi || canVote ? 'auto' : 'none';
   watchEl.style.display = p ? 'flex' : 'none';
 }
 
@@ -1860,12 +1955,17 @@ function syncVisuals(dt, alpha) {
   if (view.chest) view.chest.update(dt, t);
   // revive circles
   const seen = _seenCircles; seen.clear();
-  for (const c of sim.circles) {
+  // (versus: a kitty that left, for its team to pick up, shows as a revive circle in its colour too)
+  const vsSpots = sim.versus && sim.vsLeft ? Object.entries(sim.vsLeft).filter(([, s]) => !s.by).map(([id, s]) => ({ playerId: 'v' + id, x: s.x, z: s.z, color: s.color, team: s.team })) : [];
+  // (versus: another team's circles grey and faint: not yours to revive)
+  const myTeam = sim.versus ? (sim.players.find((q) => q.id === online.me) || {}).team : undefined;
+  for (const c of vsSpots.length ? [...sim.circles, ...vsSpots] : sim.circles) {
     seen.add(c.playerId);
     let m = view.circles.get(c.playerId);
     if (!m) {
-      const p = playerById(c.playerId);
-      m = createReviveCircleModel(p ? p.color : 0xffffff);
+      const p = c.color != null ? c : playerById(c.playerId);
+      const team = c.team != null ? c.team : p && p.team;
+      m = createReviveCircleModel(p ? p.color : 0xffffff, { faint: !!sim.versus && team !== myTeam });
       scene.add(m.group);
       view.circles.set(c.playerId, m);
     }
@@ -2034,7 +2134,7 @@ function chainPoint(out, A, B, ya, yb, h, s) {
 const anchorRings = new Map();   // id -> mesh
 const anchorMat = new THREE.MeshBasicMaterial({ color: 0xc9ced6, transparent: true, opacity: 0.75, side: THREE.DoubleSide, depthWrite: false });
 function drawAnchors() {
-  const an = (sim && sim.chain && sim.anchors) || {};
+  const an = { ...((sim && sim.chain && sim.anchors) || {}) };
   for (const [id, m] of anchorRings) if (!an[id]) { scene.remove(m); m.geometry.dispose(); anchorRings.delete(id); }
   const pulse = 1 + Math.sin(performance.now() / 260) * 0.06;
   for (const id of Object.keys(an)) {
@@ -2055,7 +2155,8 @@ function drawChains(dt) {
   for (let i = 0; i < Math.max(pairs.length, chainGroups.length); i++) {
     // (an end can be an anchor: a kitty that left the game, chainLinks; drawn on the ground where it was)
     const pr = pairs[i], ka = pr && !pr[0].anchor && kitties.get(pr[0].id), kb = pr && !pr[1].anchor && kitties.get(pr[1].id);
-    const on = !!(pr && (ka || pr[0].anchor) && (kb || pr[1].anchor) && (pr[0].alive || pr[1].alive));
+    // (drawn while a kitty on it is up, or an end is a ring: two rings of kitties that left stay chained to each other)
+    const on = !!(pr && (ka || pr[0].anchor) && (kb || pr[1].anchor) && (pr[0].alive || pr[1].alive || pr[0].anchor || pr[1].anchor));
     let g = chainGroups[i];
     if (!g) {
       if (!on) continue;
@@ -2139,8 +2240,7 @@ function updateHUD() {
   if (dirty) { hudScores.length = ps.length; hudPlayers.length = ps.length; }
   for (let i = 0; i < ps.length; i++) {
     const p = ps[i];
-    const dist = p.ran === undefined ? 0 : Math.round(20 * p.ran), crownPts = (p.ran === undefined ? 20 : 5) * (p.finishes || 0);
-    const score = p.rescues + (p.bonus || 0) - p.deaths + dist + crownPts, crown = !!p.crowned, crowns = p.finishes || 0;
+    const score = playerScore(p), crown = !!p.crowned, crowns = p.finishes || 0;
     const me = online.playing ? p.id === online.me : true, you = online.playing && p.id === online.me;
     let r = hudScores[i];
     if (!r) r = hudScores[i] = {};
@@ -2159,7 +2259,8 @@ function updateHUD() {
     h.name = p.name; h.color = p.color; h.shimmer = shimmer; h.gold = gold; h.rainbow = !sim.easy && (p.finishes || 0) >= 8 && (p.rescues || 0) >= 60; const il = iconLook(p); h.cool = il.cool; h.specs = !!il.specs; h.metal = il.metal || ''; h.lion = il.lion; h.lionLook = il.lionLook; h.maneMetal = il.maneMetal || ''; h.lensMetal = il.lensMetal || ''; h.lensStill = !!il.lensStill; h.alive = p.alive; h.lives = p.lives; h.speedMult = p.speedMult; h.shield = p.shield; h.you = you;
     h.medic = medicLook(cosOf(p));   // the medic badge (3000 revives), when switched on
     h.paid = paid; h.ps = pst; h.id = p.id;
-    // vote to kill (online): standing still 10 s, the others can vote it down (server.js voteKill): its votes, how many
+    // vote to kill (online): standing still 30 s (server AFK_TICKS), the others can vote it down (server.js voteKill; started from the
+    // spectate bar, then shown to everyone: ui.js paintVotes): its votes, how many
     // it takes (more than half of the others not standing still themselves), and whether we can vote / have voted
     h.afk = online.playing ? (p.afk || 0) : 0;
     if (h.afk) {
@@ -2169,12 +2270,46 @@ function updateHUD() {
       h.voted = online.voted.has(p.id); h.canVote = !you && !!meP && !(meP.afk > 0);
     }
   }
-  if (dirty) ui.setScores(hudScores, bestKind);
+  if (sim.versus) ui.setScores(vsRows(), 'versus-' + bestKind);   // (versus: a row a team; same rows: nothing redrawn)
+  else if (dirty) ui.setScores(hudScores, bestKind);
+  // versus: your card, your team's (full), then the other teams' (faces) team by team
+  if (sim.versus) {
+    const mine = (ps.find((q) => q.id === online.me) || {}).team;
+    for (let i = 0; i < ps.length; i++) { hudPlayers[i].team = ps[i].team; hudPlayers[i].full = !hudPlayers[i].you && ps[i].team === mine; }
+    const rank = (h) => (h.you ? 0 : h.full ? 1 : 2);
+    hudData.players = hudPlayers.slice().sort((a, b) => rank(a) - rank(b) || (a.team | 0) - (b.team | 0));
+  } else {
+    for (const h of hudPlayers) if (h) { h.full = false; h.team = undefined; }   // (nothing left over from a versus game)
+    hudData.players = hudPlayers;
+  }
+  hudData.versus = !!sim.versus;
   hudData.level = sim.hell ? sim.level : sim.levelData.level || sim.level; hudData.time = sim.time; hudData.rescues = sim.stats.rescues;
   hudData.tag = sim.hell ? 'HELL' : 'LEVEL';   // (hell: how far along the map shows only when the game is over)
   ui.setHUD(hudData);
 }
 
+
+// versus: the teams' names and points from the server ([id, name, dist, cur, crowns, deaths, revives], shared/sim.js vsTeam)
+function applyVs(list) {
+  sim.vsNames = {};
+  for (const [id, name, dist, cur, crowns, deaths, revives] of list) {
+    sim.vsNames[id] = name;
+    sim.teams[id] = { dist, cur, crowns, deaths, revives };
+  }
+}
+// versus: one scoreboard row a team (its points: vsScore), its kitties on hover
+function vsRows() {
+  const mine = (sim.players.find((p) => p.id === online.me) || {}).team;
+  return Object.entries(sim.teams).map(([id, t]) => {
+    const ks = sim.players.filter((p) => p.team === +id);
+    return { name: (sim.vsNames && sim.vsNames[id]) || 'Team ' + id, color: ks.length ? ks[0].color : 0xaaaaaa, score: vsScore(t), crown: t.crowns > 0, crowns: t.crowns,
+      revives: t.revives, caught: t.deaths, me: +id === mine, you: +id === mine, members: ks.map((p) => p.name).join(', ') || 'nobody left',
+      kitties: ks.map((p) => ({ name: p.name, color: p.color })), gone: !ks.length };   // (the end cards: each name in its cat's colour)
+  });
+}
+// versus: the teams best first (the final ranking)
+// (a team with nobody left in the game (all left, or joined up with another) isn't placed, as on the server: vsResults)
+const vsRanking = () => { const rows = vsRows(), still = rows.filter((t) => !t.gone); return (still.length ? still : rows).sort(rankOrder); };
 
 // ---------- online ----------
 // Server-authoritative netcode. The server runs the real sim; this client:
@@ -2204,7 +2339,11 @@ account.init();
 const lobbyUI = createLobbyUI(document.getElementById('ui'), {
   // opts: { max: how many kitties may join, password: '' = public } (lobby.js)
   onCreate: (name, mode, opts = {}) => net.send({ t: 'create', name, mode, easy: !!opts.easy, color: prefColor(), max: opts.max, password: opts.password || '',
-    ...(opts.hell ? { hell: true, hl: account.hellOpen(mode) } : {}), ...(opts.chain ? { chain: opts.chain === 'all' ? 'all' : true } : {}) }),
+    ...(opts.hell ? { hell: true, hl: account.hellOpen(mode) } : {}), ...(opts.chain ? { chain: opts.chain === 'all' ? 'all' : true } : {}), ...(opts.versus ? { versus: true } : {}) }),
+  onTeam: (msg) => net.send({ t: 'team', ...msg }),   // (a versus lobby: join / make / name a team)
+  // (the host: the lobby's game changed in the lobby; as onCreate)
+  onSettings: (mode, opts = {}) => net.send({ t: 'settings', mode, easy: !!opts.easy, ...(opts.hell ? { hell: true, hl: account.hellOpen(mode) } : {}),
+    ...(opts.chain ? { chain: opts.chain === 'all' ? 'all' : true } : {}), ...(opts.versus ? { versus: true } : {}) }),
   onChainWith: (id) => net.send({ t: 'chainwith', id }),   // (a chained lobby: chain up with that kitty)   // (hl: hell open here, offline progress included)
   hellOpen: (mode) => account.hellOpen(mode),
   onJoin: (code, name, password = '') => net.send({ t: 'join', code, name, color: prefColor(), password }),
@@ -2627,10 +2766,11 @@ function beginOnlineGame(m) {
   if (online.room) rememberPlayers(online.room.members);   // (for the invite panel)
   playerCount = m.players.length;
   removeKitties();
-  sim = createSim({ seed: m.seed, players: m.players, startLevel: m.level, mode: m.mode, finales: +m.rf || 0, easy: !!m.easy, hell: !!m.hell, waves: !!m.hw, chain: m.cn ? (m.cn.all ? 'all' : true) : false });
+  sim = createSim({ seed: m.seed, players: m.players, startLevel: m.level, mode: m.mode, finales: +m.rf || 0, easy: !!m.easy, hell: !!m.hell, waves: !!m.hw, chain: m.cn ? (m.cn.all ? 'all' : true) : false, versus: !!m.vs });
   if (m.cn && Array.isArray(m.cn.c)) { sim.chains = m.cn.c; sim.anchors = m.cn.a || {}; }   // (the server's chains: who left, rejoined)
+  if (m.vs) applyVs(m.vs);
   sim.retries = m.rt | 0;
-  analytics.runStart('online', m.mode || 'mixed', !!m.hell, m.cn && m.players.length > 1 ? (m.cn.all ? 'all' : true) : false, !!m.easy);
+  analytics.runStart('online', m.mode || 'mixed', !!m.hell, m.cn && m.players.length > 1 ? (m.cn.all ? 'all' : true) : false, !!m.easy, !!m.vs);
   sim.started = true;
   // joined mid-level: the lottery chest and what it dropped (ch, xi), then what is already taken
   if (m.ch) sim.chest = { x: m.ch[0], z: m.ch[1], open: !!m.ch[2] };
@@ -2840,11 +2980,15 @@ function applySnapshot(m) {
   const taken = new Set(m.it);
   for (const it of sim.items) it.taken = taken.has(it.id);
   sim.circles = m.c.map(([playerId, x, z, t]) => ({ playerId, x, z, t }));
+  if (m.vs) applyVs(m.vs);
+  if (sim.versus) sim.vsLeft = Object.fromEntries((m.vl || []).map(([id, x, z, team, color, by]) => [id, { x, z, team, color, by }]));   // (kitties that left: a revive circle where they are, or carried)
+  if (sim.chain && m.ad) for (const [id, x, z] of m.ad) if (sim.anchors[id]) Object.assign(sim.anchors[id], { x, z, drag: true });   // (bodies dragged on a chain)
+  online.jv = m.jv || [];   // (chained: votes to add a kitty on its own to a group: updateJoinBtn)
 
   const seen = new Set();
   let rosterChanged = false;
   for (const a of m.p) {
-    const [id, x, z, vx, vz, heading, alive, inC, lives, speedMult, invuln, shield, deaths, rescues, margin, finishes = 0, waitRelease, crowned = 0, bonus = 0, freeTurn = 0, ran, afk = 0] = a;
+    const [id, x, z, vx, vz, heading, alive, inC, lives, speedMult, invuln, shield, deaths, rescues, margin, finishes = 0, waitRelease, crowned = 0, bonus = 0, freeTurn = 0, ran, afk = 0, team] = a;
     seen.add(id);
     let p = sim.players.find((q) => q.id === id);
     const fresh = !p;
@@ -2857,7 +3001,7 @@ function applySnapshot(m) {
     }
     const wasAlive = p.alive;
     const oldX = p.x + (id === online.me ? online.errX : 0), oldZ = p.z + (id === online.me ? online.errZ : 0);
-    Object.assign(p, { vx, vz, heading, alive: !!alive, inCenter: !!inC, lives, speedMult, invuln, shield, deaths, rescues, finishes, crowned: !!crowned, bonus, ran, afk });   // (ran: undefined from an older server)
+    Object.assign(p, { vx, vz, heading, alive: !!alive, inCenter: !!inC, lives, speedMult, invuln, shield, deaths, rescues, finishes, crowned: !!crowned, bonus, ran, afk, ...(team !== undefined ? { team } : {}) });   // (ran: undefined from an older server; team: versus)
     if (!afk) online.voted.delete(id);   // (moving again: a later vote is a new one)
     p.moving = Math.hypot(vx, vz) > 0.5;
     if (id === online.me) {
@@ -2973,6 +3117,7 @@ function tick(dt) {
         time: sim.time,
         // alone: nobody could revive you; nudge toward friends
         alone: sim.players.length === 1 ? (wasOnline ? 'online' : 'solo') : null,
+        ...(sim.versus ? { versus: vsRanking() } : {}),
         onShare: () => shareRun(false, runSim.time),
       }, () => { ui.hideGameOver(); if (wasOnline) backToLobby(); else startGame(playerCount); }, wasOnline ? 'BACK TO LOBBY' : null,
       // LEAVE GAME: offline back to the title, online out of the lobby (to the lobby list)
@@ -2992,6 +3137,7 @@ function tick(dt) {
   effects.update(vdt);
   updateCamera(dt, alpha);
   updateWatchLabel();
+  updateJoinBtn();
   updateWatchBtn();
   updateHUD();
 

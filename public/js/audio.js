@@ -192,6 +192,25 @@ function createAudio() {
     tone(g, dest, { type: 'triangle', f: f / 2, t, a: 0.006, d: d * 0.6, peak: peak * 0.3 });
   }
 
+  // a cat's voiced syllable (the laughs): an "h" of breath, then a sawtooth voice gliding f0 -> f1 through the vowel's
+  // formants (fs: [[freq, Q, gain], ...]), d seconds long
+  function syllable(g, dest, t, f0, f1, d, fs, peak, breath = 0.05) {
+    noise(g, dest, { t, a: 0.004, d: 0.045, peak: breath, ft: 'bandpass', f: 2600, Q: 1.4 });
+    const tv = t + 0.025;
+    const os = ctx.createOscillator(); os.type = 'sawtooth';
+    os.frequency.setValueAtTime(f0, tv);
+    os.frequency.exponentialRampToValueAtTime(f1, tv + d);
+    lfo(g, os.frequency, 9, f0 * 0.03, tv, tv + d + 0.03);
+    const eg = g.add(ctx.createGain());
+    env(eg.gain, tv, 0.012, d * 0.35, d * 0.65, peak);
+    os.connect(eg);
+    for (const [f, Q, gain] of fs) {
+      const fg = g.add(ctx.createGain()); fg.gain.value = gain; fg.connect(dest);
+      eg.connect(filt(g, fg, 'bandpass', f, Q));
+    }
+    g.src(os, tv, tv + d + 0.04);
+  }
+
   // Simple 2-op FM bell. o: {f, ratio, index, t, a, d, peak}
   function fm(g, dest, o) {
     const t = o.t, a = o.a ?? 0.003, d = o.d ?? 0.4, end = t + a + d;
@@ -235,6 +254,14 @@ function createAudio() {
       // thud
       tone(g, o, { type: 'sine', f: 150, to: 45, t: t + 0.36, a: 0.003, d: 0.2, peak: 0.5 });
       noise(g, o, { t: t + 0.36, d: 0.12, peak: 0.22, ft: 'lowpass', f: 320 });
+    },
+
+    // D: a giggly "hihihi" (an ee vowel), quick and high: versus, another team's kitty caught (main.js)
+    foeSnickerD(g, o, t, p) {
+      [0, 0.09, 0.18, 0.27].forEach((dt, i) => {
+        const k = 1 - i * 0.06;
+        syllable(g, o, t + dt, 900 * p * k, 780 * p * k, 0.05, [[420 * p, 5, 0.8], [2700 * p, 9, 0.7], [3500 * p, 10, 0.25]], 0.14 * (1 - i * 0.15), 0.05);
+      });
     },
 
     revive(g, o, t, p) {
@@ -747,7 +774,9 @@ function createAudio() {
     musicFilter.frequency.setTargetAtTime(dangerFreq(danger), ctx.currentTime, 0.25);
   }
 
-  return { unlock, play, startMusic, stopMusic, setMuted, isMuted, setDanger, setBackground, attachTrack, setVolumes };
+  // (more sounds from outside: make gets the helpers, returns { name(g, o, t, p) } to add; the local sound lab's drafts)
+  const extend = (make) => Object.assign(SFX, make({ tone, noise, filt, lfo, env, syllable, marimba, mtof, rnd }));
+  return { unlock, play, startMusic, stopMusic, setMuted, isMuted, setDanger, setBackground, attachTrack, setVolumes, extend };
 }
 
 export { createAudio };

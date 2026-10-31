@@ -129,6 +129,12 @@ function statsView(s, hellModes = []) {
   tot.append(el('span', null, `CROWNS ${(s && s.crowns) || 0}`), el('span', null, `REVIVES ${(s && s.revives) || 0}`));
   const wrap = el('div', 'rka-stats');
   wrap.append(t, tot);
+  const vs = s && s.versus;
+  if (vs && vs.games > 0) {   // (versus: once played)
+    const vt = el('div', 'rka-tot');
+    vt.append(el('span', null, `⚔ VERSUS WINS ${vs.wins || 0}`), el('span', null, `GAMES ${vs.games}`));
+    wrap.appendChild(vt);
+  }
   if (hellModes.length) wrap.appendChild(hellView(s && s.hell, hellModes));
   return wrap;
 }

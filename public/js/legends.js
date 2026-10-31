@@ -43,6 +43,7 @@ const CSS = `
 .rkg-list{flex:1 1 auto;min-height:60px;overflow:auto;display:flex;flex-direction:column;gap:8px;padding-right:2px;touch-action:pan-y;-webkit-overflow-scrolling:touch;}
 .rkg-card{padding:9px 12px;border-radius:16px;background:rgba(0,0,0,.24);border:2px solid rgba(255,255,255,.12);}
 .rkg-card.rkg-mine{border-color:rgba(255,215,100,.8);background:rgba(255,210,80,.08);}
+.rkg-card .rkg-gone{opacity:.38;filter:grayscale(.7);}
 .rkg-head{display:flex;gap:8px;flex-wrap:wrap;align-items:baseline;font-size:12px;font-weight:900;letter-spacing:.06em;color:#ffcf5a;margin-bottom:4px;}
 .rkg-head span{opacity:.85;}
 .rkg-head .rkg-you{background:#ff5c93;color:#fff;border-radius:6px;padding:0 6px;letter-spacing:.1em;opacity:1;}
@@ -76,30 +77,18 @@ const CSS = `
 .rkg-lv button.rkg-on{border-color:#ffcf5a;background:rgba(255,207,90,.25);}
 .rkg-lv button.rkg-hell{width:auto;padding:0 8px;color:#ffb3a0;}
 .rkg-lv button.rkg-hell.rkg-on{border-color:#ff6a3d;background:rgba(255,80,40,.28);color:#ffe2d8;}
-.rkg-lrow{display:flex;gap:10px;align-items:center;padding:7px 12px;border-radius:12px;background:rgba(0,0,0,.24);border:2px solid rgba(255,255,255,.1);}
-.rkg-lrow.rkg-mine{border-color:rgba(255,215,100,.8);background:rgba(255,210,80,.1);}
-.rkg-lrow .rkg-no{min-width:34px;}
-.rkg-lrow .rkg-n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:15px;}
-.rkg-lrow .rkg-team{flex:1;min-width:0;display:flex;flex-wrap:wrap;align-items:center;gap:2px 6px;}
-.rkg-lrow .rkg-team .rkg-n,.rkg-lrow .rkg-team .rkg-who2{flex:none;}   /* (a name with its swag number too: whole, never squeezed) */
-.rkg-lrow .rkg-amp{opacity:.45;font-weight:900;}
-.rkg-lrow .rkg-gone{opacity:.38;filter:grayscale(.7);}
-.rkg-lrow .rkg-t{flex:none;font-weight:900;font-size:15px;color:#fff6d8;font-variant-numeric:tabular-nums;}
-.rkg-lrow .rkg-d{flex:none;font-size:11px;font-weight:800;opacity:.65;text-align:right;min-width:62px;}
-@media (max-width:420px){ .rkg-lrow .rkg-d{display:none;} }   /* (a narrow screen: the names keep their room) */
-/* hell rows: the name has its own line (the result is long), the result and the date under it */
-.rkg-lrow.rkg-hrow{flex-wrap:wrap;row-gap:2px;}
-.rkg-lrow.rkg-hrow > :nth-child(2){flex:1 1 calc(100% - 46px);}
-.rkg-lrow.rkg-hrow .rkg-t{margin-left:44px;font-size:14px;}
-.rkg-lrow.rkg-hrow .rkg-d{margin-left:auto;}
-@media (max-width:420px){ .rkg-lrow.rkg-hrow .rkg-d{display:block;} }   /* (it has room there now) */
+/* a big team: its first names, then +N (hover / tap: everyone, in .rkg-pop beside it) */
+.rkg-more{display:inline-block;padding:0 7px;border-radius:999px;background:rgba(255,255,255,.14);color:#fff;font-weight:900;font-size:12px;cursor:pointer;}
+.rkg-more:hover,.rkg-more:focus,.rkg-more.rkg-open{background:rgba(255,207,90,.32);outline:none;}
+.rkg-pop{position:fixed;z-index:10000;display:none;max-width:320px;padding:8px 10px;border-radius:12px;background:rgba(20,8,40,.96);color:#fff;
+  font-family:"Baloo 2",Fredoka,"Trebuchet MS","Segoe UI",system-ui,sans-serif;
+  border:2px solid rgba(255,207,90,.6);font-weight:800;font-size:13px;line-height:1.5;box-shadow:0 6px 18px rgba(0,0,0,.5);pointer-events:none;}
+.rkg-pop .rkg-gone{opacity:.38;filter:grayscale(.7);}
 /* a player's swag number: next to the name while hovered (tapped, on a touch screen) */
 .rkg-paid{display:none;margin-left:6px;font-size:12px;font-weight:900;color:#ffd56b;background:rgba(20,8,40,.8);padding:1px 7px;border-radius:7px;
   vertical-align:1px;-webkit-text-stroke:0;font-variant-numeric:tabular-nums;white-space:nowrap;}
 .rkg-who2{cursor:default;}
 .rkg-who2:hover .rkg-paid,.rkg-who2.rkg-showpaid .rkg-paid{display:inline-block;}
-.rkg-lrow .rkg-who2{flex:1;min-width:0;display:flex;align-items:center;}
-.rkg-lrow .rkg-who2 .rkg-n{flex:0 1 auto;}
 .rkg-you2{text-align:center;font-weight:900;font-size:13px;color:#ffcf5a;}
 .rkg-grp{display:flex;flex-direction:column;gap:8px;padding:10px;border-radius:16px;background:rgba(0,0,0,.22);border:2px solid rgba(255,255,255,.12);}
 .rkg-grp h3{margin:0;font-size:14px;font-weight:900;letter-spacing:.06em;color:#ffcf5a;}
@@ -337,6 +326,7 @@ function createLegends(root, { send, isOnline, reconnect, onOpenChange, friends,
     if (onOpenChange) onOpenChange(true);
   }
   function close() {
+    hidePop();
     if (!wrap) return;
     window.removeEventListener('keydown', onKey, true);
     wrap.remove();
@@ -483,6 +473,46 @@ function createLegends(root, { send, isOnline, reconnect, onOpenChange, friends,
     w.addEventListener('click', () => w.classList.toggle('rkg-showpaid'));
     return w;
   }
+  // A big team's names (more than NAMES_MAX): the first ones, then +N; its hover (or a tap) shows everyone. The server
+  // lists a team best scorer first (versus: the teams by points, tm their place: the winners shown, a │ between teams)
+  const NAMES_MAX = 8, NAMES_LEAD = 4;
+  function leadOf(list) {
+    if (list.length <= NAMES_MAX) return list.length;
+    if (list[0] && list[0].tm != null) { let n = 0; while (n < list.length && list[n].tm === list[0].tm) n++; return n; }
+    return NAMES_LEAD;
+  }
+  const newTeam = (a, b) => !!a && !!b && a.tm != null && b.tm != null && a.tm !== b.tm;
+  let popEl = null;
+  function showPop(chip, list) {
+    if (!popEl) { popEl = el('div', 'rkg-pop'); document.body.appendChild(popEl); }
+    popEl.textContent = '';
+    list.forEach((e, i) => {
+      if (i) popEl.append(newTeam(list[i - 1], e) ? ' │ ' : ', ');
+      const n = nameEl(e);
+      if (e.gone) n.classList.add('rkg-gone');
+      popEl.appendChild(n);
+    });
+    popEl.style.display = 'block';
+    const r = chip.getBoundingClientRect(), w = popEl.offsetWidth, h = popEl.offsetHeight;
+    popEl.style.left = Math.max(8, Math.min(innerWidth - w - 8, r.left)) + 'px';
+    popEl.style.top = (r.bottom + h + 8 < innerHeight ? r.bottom + 4 : Math.max(8, r.top - h - 4)) + 'px';
+  }
+  function hidePop() {
+    if (popEl) popEl.style.display = 'none';
+    for (const o of document.querySelectorAll('.rkg-more.rkg-open')) o.classList.remove('rkg-open');
+  }
+  function moreChip(list, hidden) {
+    const c = el('span', 'rkg-more', '+' + hidden);
+    c.tabIndex = 0;
+    c.setAttribute('aria-label', hidden + ' more kitties: show everyone');
+    c.addEventListener('mouseenter', () => showPop(c, list));
+    c.addEventListener('mouseleave', () => { if (!c.classList.contains('rkg-open')) hidePop(); });
+    c.addEventListener('focus', () => showPop(c, list));
+    c.addEventListener('blur', () => hidePop());
+    c.addEventListener('click', (e) => { e.stopPropagation(); const on = !c.classList.contains('rkg-open'); hidePop(); if (on) { c.classList.add('rkg-open'); showPop(c, list); } });
+    return c;
+  }
+  document.addEventListener('click', () => { if (popEl && popEl.style.display === 'block') hidePop(); });
   function cardLines(card, entries) {
     const quiet = [];
     for (const e of entries) {
@@ -493,11 +523,12 @@ function createLegends(root, { send, isOnline, reconnect, onOpenChange, friends,
       card.appendChild(line);
     }
     if (quiet.length) {
-      const line = el('div', 'rkg-line');
-      quiet.forEach((e, i) => {
-        if (i) line.append(', ');
+      const line = el('div', 'rkg-line'), n = leadOf(quiet);
+      quiet.slice(0, n).forEach((e, i) => {
+        if (i) line.append(newTeam(quiet[i - 1], e) ? ' │ ' : ', ');
         line.appendChild(nameEl(e));
       });
+      if (n < quiet.length) line.append(' ', moreChip(quiet, quiet.length - n));
       card.appendChild(line);
     }
   }
@@ -513,7 +544,7 @@ function createLegends(root, { send, isOnline, reconnect, onOpenChange, friends,
       const body = el('div', 'rkg-body');
       const head = el('div', 'rkg-head');
       head.appendChild(el('span', null, fmtDate(f.at)));
-      head.appendChild(el('span', null, (MODES[tab] || '') + (f.kind === 'solo' ? ' · solo' : f.kind === 'coop' ? ' · co-op' : '') + (f.chain ? ' · ⛓ chained' : '')));
+      head.appendChild(el('span', null, (MODES[tab] || '') + (f.kind === 'solo' ? ' · solo' : f.kind === 'coop' ? ' · co-op' : '') + (f.vs ? ' · ⚔ versus' : '') + (f.chain ? ' · ⛓ chained' : '')));
       if (Number.isFinite(f.total)) head.appendChild(el('span', null, '⏱ ' + fmtTime(f.total)));
       body.appendChild(head);
       cardLines(body, view === 'firsts' ? [{ name: f.name, color: f.color, text: f.text, paid: f.paid }] : f.team || []);
@@ -662,30 +693,41 @@ function createLegends(root, { send, isOnline, reconnect, onOpenChange, friends,
         : hell ? 'Nobody has been to hell on this board yet. How far can you get?' : 'No times on this board yet. Clear the level to set the first one!'));
       return;
     }
+    // a card each, as on the other lists: its place, then the date, the team's size and the time over its names
     rows.forEach((r, i) => {
-      const row = el('div', 'rkg-lrow' + (hell ? ' rkg-hrow' : '') + (r.me ? ' rkg-mine' : ''));
-      // a team's time once, with everyone in it (members: the server joined their rows)
-      const who = Array.isArray(r.members) && (r.members.length > 1 || r.more > 0) ? el('span', 'rkg-team') : nameEl(r);
-      // (those with a faster time since: last, greyed)
-      if (who.className === 'rkg-team') r.members.forEach((m, k) => {
-        if (k) who.appendChild(el('span', 'rkg-amp', '·'));
+      const card = el('div', 'rkg-card rkg-rank' + (r.me ? ' rkg-mine' : ''));
+      card.appendChild(el('div', 'rkg-no', '#' + (i + 1)));
+      const body = el('div', 'rkg-body'), head = el('div', 'rkg-head');
+      head.appendChild(el('span', null, fmtDate(r.at)));
+      if (r.vs) head.appendChild(el('span', null, '⚔ versus'));   // (the team with the most points named first)
+      if (lv.team && r.team > 1) head.appendChild(el('span', null, r.team + ' kitties'));
+      head.appendChild(el('span', null, icon + fmt(r.time, r.total)));
+      body.appendChild(head);
+      // a team's time once, with everyone in it (members: the server joined their rows, best scorer first); those with a
+      // faster time since greyed in their place; a big team its first names, then +N with everyone on hover / tap
+      const ms = Array.isArray(r.members) && (r.members.length > 1 || r.more > 0) ? r.members : [r], lead = leadOf(ms);
+      const line = el('div', 'rkg-line');
+      ms.slice(0, lead).forEach((m, k) => {
+        if (k) line.append(newTeam(ms[k - 1], m) ? ' │ ' : ', ');
         const n = nameEl(m);
         if (m.gone) { n.classList.add('rkg-gone'); n.title = 'Has a faster time since'; }
-        who.appendChild(n);
+        line.appendChild(n);
       });
-      if (who.className === 'rkg-team' && r.more > 0) {   // (teammates the board can't name: how many)
+      if (lead < ms.length) line.append(' ', moreChip(ms, ms.length - lead));
+      if (r.more > 0) {   // (teammates the board can't name: how many)
         const x = el('span', 'rkg-n rkg-gone', '+' + r.more);
         x.title = r.more === 1 ? 'One more kitty in this team' : r.more + ' more kitties in this team';
-        who.append(el('span', 'rkg-amp', '·'), x);
+        line.append(', ', x);
       }
-      row.append(el('span', 'rkg-no', '#' + (i + 1)), who);
-      if (lv.team && r.team > 1) row.appendChild(el('span', 'rkg-d', r.team + ' kitties'));
-      row.append(el('span', 'rkg-t', icon + fmt(r.time, r.total)), el('span', 'rkg-d', fmtDate(r.at)));
-      list.appendChild(row);
+      body.appendChild(line);
+      card.appendChild(body);
+      list.appendChild(card);
     });
     if (lvData.me && !rows.some((r) => r.me)) list.appendChild(el('div', 'rkg-you2', 'You: #' + lvData.me.rank + ' · ' + icon + fmt(lvData.me.time, lvData.me.total)));
   }
   function render() {
+    hidePop();
+    if (refs && refs.list && !refs.list.popOff) { refs.list.popOff = true; refs.list.addEventListener('scroll', hidePop); }
     if (!refs) return;
     renderTabs();
     renderViews();
@@ -709,7 +751,7 @@ function createLegends(root, { send, isOnline, reconnect, onOpenChange, friends,
       const card = el('div', 'rkg-card' + (w.id === mine ? ' rkg-mine' : ''));
       const head = el('div', 'rkg-head');
       head.appendChild(el('span', null, fmtDate(w.at)));
-      head.appendChild(el('span', null, (MODES[w.mode] || 'Run Kitty Run') + (w.kind === 'solo' ? ' · solo' : w.kind === 'coop' ? ' · co-op' : '') + (w.chain ? ' · ⛓ chained' : '')));
+      head.appendChild(el('span', null, (MODES[w.mode] || 'Run Kitty Run') + (w.kind === 'solo' ? ' · solo' : w.kind === 'coop' ? ' · co-op' : '') + (w.vs ? ' · ⚔ versus' : '') + (w.chain ? ' · ⛓ chained' : '')));
       // the whole game's time (wins before 2026-10-14 only have the final level's)
       const tt = Number.isFinite(w.total) ? w.total : w.runTime;
       if (Number.isFinite(tt)) head.appendChild(el('span', null, '⏱ ' + fmtTime(tt)));
