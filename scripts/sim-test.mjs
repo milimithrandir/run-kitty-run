@@ -2,7 +2,7 @@
 // Add new checks here rather than new scripts. Account checks use disposable temporary files and fake Stripe responses.
 // Exit code 1 if any check fails.
 import { createSim, stepSim } from '../public/js/shared/sim.js';
-import { CFG, SKATE_FINAL_LEVEL, FINAL_MODES, PLAYER_NAMES, stageStep } from '../public/js/shared/config.js';
+import { CFG, SKATE_FINAL_LEVEL, FINAL_MODES, PLAYER_NAMES, stageStep, SEASONS_FV } from '../public/js/shared/config.js';
 import { generateLevel, mazeSelfTest, collideCircle, onIce, pathProgress } from '../public/js/shared/maze.js';
 import { hyp } from '../public/js/shared/rng.js';
 import { filterChat, filterName } from '../public/js/shared/filter.js';
@@ -382,6 +382,37 @@ const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process
     const tb = s.levelData.items.filter((it) => it.tree);
     ok(tb.length === s.levelData.trees.length && tb.every((it, i) => it.type === 'boots' && it.x === s.levelData.trees[i].x), `a pair of boots on top of every tree (${tb.length})`);
     void t;
+  }
+  // finale version 25: the seasons. Trees (and their boots) in spring, not fall; on foot a leaf (fall) / snow (winter) pile on
+  // a third of the lanes (Run + Skate's day halves too, never on ice), safe to hide in; fall and winter levels have
+  // at least 2 shields on levels 1-4, 1 on levels 5-8
+  {
+    const V = SEASONS_FV, run = (L) => generateLevel(L, 41, 'run', V), lanes = (ld) => ld.legs.filter((l, i) => i < ld.legs.length - 1 && l.len >= 2 * CFG.RING_WIDTH).length;
+    const fall = run(2), winter = run(3), spring = run(4), old = generateLevel(2, 41, 'run', V - 1);
+    const dayFall = generateLevel(stageStep('mixed', V, 2), 41, 'mixed', V), nightFall = generateLevel(stageStep('mixed', V, 2, true), 41, 'mixed', V);
+    const third = (ld) => !!ld.piles && ld.piles.length === Math.round(lanes(ld) / 3) && new Set(ld.piles.map((q) => q.leg)).size === ld.piles.length;
+    ok(!fall.trees.length && spring.trees.length >= 10 && spring.items.filter((it) => it.tree).length === spring.trees.length && old.trees.length >= 10 && !old.piles
+      && third(fall) && fall.piles.every((q) => q.kind === 'leaves') && third(winter) && winter.piles.every((q) => q.kind === 'snow') && !spring.piles
+      && third(dayFall) && !nightFall.piles && !generateLevel(4, 41, 'ice', V).piles && fall.items.every((it) => fall.piles.every((q) => hyp(it.x - q.x, it.z - q.z) > CFG.PILE_RADIUS)),
+      `seasons: spring ${spring.trees.length} trees with boots, fall ${fall.piles.length} leaf piles, winter ${winter.piles.length} snow piles (of ${lanes(fall)} lanes), Run + Skate by day too, none on ice or in version ${V - 1}`);
+    const shields = (ld) => ld.items.filter((it) => it.type === 'shield').length;
+    let least = { a: 9, b: 9 };
+    for (let seed = 1; seed <= 30; seed++) for (const [mode, L] of [['run', 2], ['run', 3], ['ice', 1], ['ice', 4], ['run', 6], ['run', 7], ['ice', 5], ['ice', 8]]) {
+      const ld = generateLevel(L, seed, mode, V), k = L <= 4 ? 'a' : 'b';
+      least[k] = Math.min(least[k], shields(ld));
+      if (shields(ld) > 3 || !ld.items.some((it) => it.type === 'life')) least[k] = -1;
+    }
+    ok(least.a >= 2 && least.b >= 1, `seasons: fall and winter levels have at least 2 shields on levels 1-4 (${least.a}), 1 on levels 5-8 (${least.b}), at most 3, still a heart`);
+    const sm = createSim({ seed: 41, startLevel: 2, mode: 'run', finales: V, players: [{ id: 1, name: 'a' }] });
+    stepSim(sm, {}, CFG.TICK);
+    const p = sm.players[0], w = sm.enemies[0];
+    const onWolf = () => { p.invuln = 0; p.x = w.x; p.z = w.z; return stepSim(sm, {}, CFG.TICK); };
+    sm.levelData.piles.push({ x: w.x, z: w.z, kind: 'leaves' });
+    let ev = onWolf();
+    ok(p.alive && !ev.some((e) => e.type === 'death'), 'seasons: a kitty in a leaf pile is safe');
+    sm.levelData.piles.pop();
+    ev = onWolf();
+    ok(ev.some((e) => e.type === 'death'), 'seasons: the same spot without the pile is deadly');
   }
   // the goal disc only makes you safe: the first kitty home can wait there for its friends; the level clears when a
   // kitty touches the crown in the middle (it wears it and gets the finish)

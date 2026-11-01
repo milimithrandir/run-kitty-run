@@ -451,6 +451,179 @@ function auraTexture() {
   return auraTexCache;
 }
 
+// Seasonal shields (kitty update s.shieldLook, main.js from the level's season): 'leaves' (fall) = a ball of autumn
+// leaves swirling round the kitty, 'snow' (winter) = a flurry of snowflakes in a faint frosty globe; anything else the
+// blue bubble. One instanced mesh each (shared geometry and material, its own instance buffer), built on first use.
+const SHIELD_LEAF_COLS = [0xd8662a, 0xc0442a, 0xe3962e, 0xcfa83a, 0xa94a26];
+const SHIELD_N = { leaves: 78, snow: 76 };
+const _shM = new THREE.Matrix4(), _shN = new THREE.Vector3(), _shT = new THREE.Vector3(), _shB = new THREE.Vector3(), _shQ = new THREE.Quaternion();
+function shieldLeafGeo() {   // a flat pointed leaf with a bent middle (catches the light from both sides)
+  const P = [[0, 0, -1], [0.42, 0.06, -0.35], [0.36, 0.04, 0.35], [0, 0, 1], [-0.36, 0.04, 0.35], [-0.42, 0.06, -0.35], [0, 0.12, 0]];
+  const T = [[6, 0, 1], [6, 1, 2], [6, 2, 3], [6, 3, 4], [6, 4, 5], [6, 5, 0]];
+  const pos = [];
+  for (const t of T) for (const k of t) pos.push(...P[k]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+  return g;
+}
+function createShieldBall(look) {
+  const snow = look === 'snow', n = SHIELD_N[look];
+  const geo = snow ? cgeo('shieldFlake', () => new THREE.IcosahedronGeometry(1, 0)) : cgeo('shieldLeaf', shieldLeafGeo);
+  const mat = snow ? cmat('shieldFlakeMat', () => new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xcfe2ff, emissiveIntensity: 0.35, roughness: 0.6, flatShading: true }))
+    : cmat('shieldLeafMat', () => new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75, flatShading: true, side: THREE.DoubleSide }));
+  const mesh = new THREE.InstancedMesh(geo, mat, n);
+  mesh.frustumCulled = false;
+  const group = new THREE.Group();
+  group.position.y = 0.4;
+  group.add(mesh);
+  // each piece: where on the ball (azimuth, height: mostly round the middle, a few over the top), how fast it goes round,
+  // its tumble, size and colour
+  const parts = [];
+  for (let i = 0; i < n; i++) {
+    const y = snow ? Math.random() * 1.7 - 0.85 : Math.random() * 1.6 - 0.72;
+    parts.push({ a: (i / n) * TAU_ + Math.random() * 0.5, y, r: 0.92 + Math.random() * 0.16, sp: (snow ? 1.1 : 1.6) * (0.75 + Math.random() * 0.5), ph: Math.random() * TAU_,
+      tw: 2 + Math.random() * 3, s: snow ? 0.045 + Math.random() * 0.045 : 0.1 + Math.random() * 0.05 });
+    mesh.setColorAt(i, _c.set(snow ? 0xffffff : SHIELD_LEAF_COLS[i % SHIELD_LEAF_COLS.length]).multiplyScalar(snow ? 1 : 0.85 + Math.random() * 0.25));
+  }
+  // a faint globe round them (frost; leaves: a warm glow), its own material, faded with the shield
+  const shell = new THREE.Mesh(cgeo('sphere24', () => new THREE.SphereGeometry(1, 24, 16)), makeFresnelMaterial(snow ? 0xe4f0ff : 0xffa850, 0.6));
+  shell.renderOrder = 5;
+  group.add(shell);
+  const glow = snow ? 0.55 : 0.25;
+  function update(time, amt, wob, flick) {
+    const k = amt * (2 - amt);   // (ease out: grows in fast)
+    group.scale.set(0.62 * wob * (1 + (1 - amt) * 0.25), 0.6 * (2 - wob), 0.62 * wob * (1 + (1 - amt) * 0.25));
+    for (let i = 0; i < n; i++) {
+      const q = parts[i], a = q.a + time * q.sp, y = q.y + Math.sin(time * 1.3 + q.ph) * (snow ? 0.12 : 0.06), rr = q.r * Math.sqrt(Math.max(0.05, 1 - y * y));
+      _p.set(Math.cos(a) * rr, y, Math.sin(a) * rr);
+      _s.setScalar(q.s * k / 0.62);
+      if (snow) _q.setFromEuler(_e.set(time * q.tw, time * q.tw * 0.7, 0));
+      else {   // leaves lie on the ball, pointing along the swirl, fluttering a little
+        _shN.copy(_p).normalize(); _shT.set(-Math.sin(a), 0, Math.cos(a)); _shB.crossVectors(_shN, _shT).normalize(); _shT.crossVectors(_shB, _shN);
+        _q.setFromRotationMatrix(_shM.makeBasis(_shB, _shN, _shT)).multiply(_shQ.setFromEuler(_e.set(Math.sin(time * q.tw + q.ph) * 0.45, q.ph, 0)));
+      }
+      mesh.setMatrixAt(i, _shM.compose(_p, _q, _s));
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.visible = flick;
+    shell.material.uniforms.uOpacity.value = amt * (flick ? glow : 0.2); shell.material.uniforms.uTime.value = time;
+  }
+  return { group, update };
+}
+
+// ...or (s.shieldStyle 'pile') the kitty IS a pile: an uneven heap of lots of the ball's leaves (fall) / snow lumps (winter)
+// hiding it completely, over dark core lumps so no gaps show through; the heap squashes and sways as it runs. The pieces sit
+// still in the heap (set once), only the heap moves, so a pile costs about what the ball does. world.js builds the lanes'
+// piles (levelData.piles) from it too, bigger.
+const PILE_N = { leaves: 300, snow: 330 }, PILE_SKIRT = 80, PILE_CLUMPS = 3, PILE_CLUMP_N = 55;
+function createShieldPile(look, skirt = false, rnd = Math.random) {   // (skirt: the lanes' piles, world.js: more round the foot, all
+  // built from the same numbers, rnd, so every one is the heap Ben picked)
+  const snow = look === 'snow', base = PILE_N[look], R = 0.62, H = 0.82, dome = (d) => H * Math.pow(Math.max(0, 1 - (d / R) ** 2), 0.75);
+  const nSkirt = skirt ? PILE_SKIRT : 0, nClump = skirt ? PILE_CLUMPS * PILE_CLUMP_N : 0, n = base + nSkirt + nClump;
+  // (lanes' piles: three bumps heaped up on its top, each its own size, round it like heads, so it's no smooth ball)
+  const clumps = Array.from({ length: skirt ? PILE_CLUMPS : 0 }, (_, k) => ({ a: (k / PILE_CLUMPS + rnd() * 0.15) * TAU_, d: R * (0.62 + rnd() * 0.14), r: [0.17, 0.25, 0.33][k % 3] + rnd() * 0.03, h: [0.12, 0.17, 0.23][k % 3] + rnd() * 0.03 }   /* (each its own size and height: a small low one, a middling one, a big tall one; out on its shoulders, well apart) */));
+  const bits = new THREE.InstancedMesh(snow ? cgeo('shieldFlake', () => new THREE.IcosahedronGeometry(1, 0)) : cgeo('shieldLeaf', shieldLeafGeo),
+    snow ? cmat('shieldFlakeMat', () => new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xcfe2ff, emissiveIntensity: 0.35, roughness: 0.6, flatShading: true }))
+      : cmat('shieldLeafMat', () => new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75, flatShading: true, side: THREE.DoubleSide })), n);
+  const core = new THREE.Mesh(cgeo('pileCore', () => new THREE.SphereGeometry(1, 20, 12, 0, TAU_, 0, Math.PI / 2)),
+    snow ? cmat('pileCoreSnow2', () => new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xdde8f6, emissiveIntensity: 0.4, roughness: 1 }))   // (soft packed snow, smooth and lit from within: not a rock)
+      : cmat('pileCoreLeaf', () => new THREE.MeshStandardMaterial({ color: 0x7a3a1e, roughness: 0.95, flatShading: true })));
+  core.scale.set(R * 0.86, H * 0.86, R * 0.86);
+  bits.castShadow = core.castShadow = true; bits.frustumCulled = false;
+  const group = new THREE.Group(), heap = new THREE.Group();
+  heap.add(core, bits); group.add(heap);
+  const brown = new THREE.Color(0x7a5236), up = new THREE.Vector3(0, 1, 0);
+  for (let i = 0; i < n; i++) {
+    if (i >= base + nSkirt) {   // a clump: leaves piled up over a spot on the heap, highest in its middle
+      const c = clumps[((i - base - nSkirt) / PILE_CLUMP_N) | 0], a = rnd() * TAU_, r = c.r * Math.sqrt(rnd());
+      const x = Math.cos(c.a) * c.d + Math.cos(a) * r, z = Math.sin(c.a) * c.d + Math.sin(a) * r, d = Math.hypot(x, z), rise = c.h * (1 - (r / c.r) ** 2);
+      _p.set(x, dome(Math.min(d, R)) * 0.98 + rise * (0.6 + rnd() * 0.4), z);
+      const sl = 2 * (d / R) * (H / R), out = (r / c.r) * 1.2;   // (the heap's slope there, plus the clump's own)
+      _shN.set(Math.cos(c.a) * sl * (d / (c.d + 1e-3)) * 0.5 + Math.cos(a) * out + (rnd() - 0.5) * 0.3, 1, Math.sin(c.a) * sl * (d / (c.d + 1e-3)) * 0.5 + Math.sin(a) * out + (rnd() - 0.5) * 0.3).normalize();
+    } else if (i >= base) {   // the skirt: leaves heaped low round its foot (a few just past it), so the pile's edge is
+      // ragged, not a neat circle
+      const a = rnd() * TAU_, d = R * (0.8 + Math.pow(rnd(), 1.6) * 0.6), low = Math.max(0, 1 - (d - R * 0.8) / (R * 0.5));
+      _p.set(Math.cos(a) * d, 0.02 + low * low * 0.22 * rnd(), Math.sin(a) * d);
+      _shN.set(Math.cos(a) * low * 0.5 + (rnd() - 0.5) * 0.3, 1, Math.sin(a) * low * 0.5 + (rnd() - 0.5) * 0.3).normalize();
+    } else if (i > base * 0.92) {   // a few blown off round its foot, lying flat
+      const a = rnd() * TAU_, d = R * (0.95 + rnd() * 0.4);
+      _p.set(Math.cos(a) * d, 0.02, Math.sin(a) * d); _shN.set((rnd() - 0.5) * 0.3, 1, (rnd() - 0.5) * 0.3).normalize();
+    } else {   // a spot in the dome, most near its surface, turned to its slope (outward whichever side)
+      const ang = rnd() * TAU_, d = R * Math.sqrt(rnd()), top = dome(d), sl = 2 * (d / R) * (H / R);
+      _p.set(Math.cos(ang) * d, top * (0.7 + rnd() * 0.3), Math.sin(ang) * d);   // (lanes' piles: all at the surface, so the dark core never shows through on top)
+      _shN.set(Math.cos(ang) * sl + (rnd() - 0.5) * 0.4, 1, Math.sin(ang) * sl + (rnd() - 0.5) * 0.4).normalize();
+    }
+    if (snow) _q.setFromEuler(_e.set(rnd() * TAU_, rnd() * TAU_, rnd() * TAU_));
+    else _q.setFromUnitVectors(up, _shN.set(_shN.x + (rnd() - 0.5) * 0.3, _shN.y, _shN.z + (rnd() - 0.5) * 0.3).normalize()).multiply(_shQ.setFromAxisAngle(up, rnd() * TAU_));
+    bits.setMatrixAt(i, _shM.compose(_p, _q, _s.setScalar(snow ? 0.06 + rnd() * 0.07 : 0.1 + rnd() * 0.07)));
+    bits.setColorAt(i, snow ? _c.set(rnd() < 0.3 ? 0xe6eef9 : 0xffffff) : _c.set(SHIELD_LEAF_COLS[i % SHIELD_LEAF_COLS.length]).lerp(brown, rnd() * 0.35));
+  }
+  bits.instanceMatrix.needsUpdate = true;
+  function update(time, amt, run, flick) {
+    const k = amt * (2 - amt), j = Math.sin(time * 16) * 0.07 * run;   // (grows in fast; squash and stretch while running)
+    group.scale.set(k * (1 - j * 0.5), k * (1 + j) * (0.95 + 0.05 * Math.sin(time * 2.2)), k * (1 - j * 0.5));
+    heap.rotation.set(Math.sin(time * 11) * 0.05 * run, Math.sin(time * 0.7) * 0.15, Math.cos(time * 9) * 0.05 * run);   // (sways and rustles)
+    group.visible = flick;
+  }
+  return { group, update };
+}
+
+// A kitty going into / out of a leaf or snow pile in the lane (main.js): a handful of the pile's own pieces (the same
+// leaf shape and colours, the same snow lumps) tossed up, tumbling and fluttering down. One pool of each, instanced.
+// ('spring': the spring trees' own leaves, world.js SPRING_LEAVES, about one in five a blossom, off its canopy as a kitty
+// climbs on or drops off)
+const SPRING_BURST_COLS = [0x3c8237, 0x4a9141, 0x336f30, 0x57a04b, 0x2e6a2c], SPRING_BURST_BLOSSOM = [0xffb7d5, 0xff9ec7, 0xfff0f6];
+const PILE_BITS_MAX = 240, PILE_BITS_SIZE = 0.8;   // (the whole burst: its pieces, how far and how high they go)
+function createPileBits() {
+  const group = new THREE.Group(), brown = new THREE.Color(0x7a5236), pools = {};
+  for (const kind of ['leaves', 'snow', 'spring']) {
+    const snow = kind === 'snow';
+    const mesh = new THREE.InstancedMesh(snow ? cgeo('shieldFlake', () => new THREE.IcosahedronGeometry(1, 0)) : cgeo('shieldLeaf', shieldLeafGeo),
+      snow ? cmat('shieldFlakeMat', () => new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xcfe2ff, emissiveIntensity: 0.35, roughness: 0.6, flatShading: true }))
+        : cmat('shieldLeafMat', () => new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75, flatShading: true, side: THREE.DoubleSide })), PILE_BITS_MAX);
+    mesh.frustumCulled = false; mesh.count = 0;
+    mesh.setColorAt(0, _c.set(0xffffff));
+    group.add(mesh);
+    pools[kind] = { mesh, snow, bits: [] };
+  }
+  function burst(x, z, kind, y0 = 0) {   // (y0: how high it starts, a tree's canopy)
+    const P = pools[kind];
+    if (!P) return;
+    for (let i = 0; i < (P.snow ? 20 : 16) && P.bits.length < PILE_BITS_MAX; i++) {
+      const a = Math.random() * TAU_, sp = (1 + Math.random() * 1.8) * PILE_BITS_SIZE, K = PILE_BITS_SIZE;
+      P.bits.push({ x: x + (Math.random() - 0.5) * 0.7 * K, y: y0 + (0.4 + Math.random() * 0.6) * K, z: z + (Math.random() - 0.5) * 0.7 * K, vx: Math.cos(a) * sp, vy: (2 + Math.random() * 1.8) * Math.sqrt(K), vz: Math.sin(a) * sp,
+        t: 0, life: 1 + Math.random() * 0.5, s: (P.snow ? 0.07 + Math.random() * 0.08 : 0.12 + Math.random() * 0.08) * K, rx: Math.random() * TAU_, ry: Math.random() * TAU_, wx: (Math.random() - 0.5) * 12, wy: (Math.random() - 0.5) * 8, ph: Math.random() * TAU_,
+        col: P.snow ? (Math.random() < 0.3 ? 0xe6eef9 : 0xffffff) : kind === 'spring' ? (Math.random() < 0.2 ? SPRING_BURST_BLOSSOM[(Math.random() * 3) | 0] : SPRING_BURST_COLS[(Math.random() * 5) | 0]) : new THREE.Color(SHIELD_LEAF_COLS[(Math.random() * SHIELD_LEAF_COLS.length) | 0]).lerp(brown, Math.random() * 0.35).getHex() });
+    }
+  }
+  function update(dt) {
+    for (const kind in pools) {
+      const P = pools[kind], bits = P.bits;
+      let n = 0;
+      for (let i = 0; i < bits.length; i++) {
+        const b = bits[i];
+        b.t += dt;
+        if (b.t >= b.life || b.y < -0.2) continue;
+        // leaves: drag and a slow fall, swaying side to side; snow: heavier, it drops
+        const drag = Math.exp(-dt * (P.snow ? 1.6 : 2.6));
+        b.vx *= drag; b.vz *= drag; b.vy = b.vy * (P.snow ? 1 : drag) - dt * (P.snow ? 7 : 4.5);
+        if (!P.snow && b.vy < -1.1) b.vy = -1.1;
+        b.x += (b.vx + (P.snow ? 0 : Math.sin(b.t * 6 + b.ph) * 0.6)) * dt; b.y = Math.max(0.02, b.y + b.vy * dt); b.z += b.vz * dt;
+        b.rx += b.wx * dt; b.ry += b.wy * dt;
+        const k = Math.min(1, (b.life - b.t) * 4);   // (shrinks away at the end)
+        P.mesh.setMatrixAt(n, _shM.compose(_p.set(b.x, b.y, b.z), _q.setFromEuler(_e.set(b.rx, b.ry, P.snow ? b.rx : 0)), _s.setScalar(b.s * k)));
+        P.mesh.setColorAt(n, _c.set(b.col));
+        bits[n++] = b;
+      }
+      bits.length = n;
+      P.mesh.count = n;
+      if (n) { P.mesh.instanceMatrix.needsUpdate = true; P.mesh.instanceColor.needsUpdate = true; }
+    }
+  }
+  return { group, burst, update };
+}
+
 function createKittyModel(color) {
   const G = kittyGeos(color);
   const mat = VC_MAT();
@@ -547,6 +720,9 @@ function createKittyModel(color) {
   bubble.visible = false;
   bubble.renderOrder = 5;
   group.add(bubble);
+  // ...or the season's ball (createShieldBall), made the first time this kitty has one
+  const balls = {};
+  let shieldLook = null;
 
   const seedOff = Math.random() * 100;
   let phase = 0, runAmt = 0, clock = 0;
@@ -684,7 +860,17 @@ function createKittyModel(color) {
     // shield
     const sh = s.shield || 0;
     shieldAmt = smoothTo(shieldAmt, sh > 0 ? 1 : 0, sh > 0 ? 14 : 8, dt);
-    bubble.visible = shieldAmt > 0.02;
+    if (sh > 0 || shieldAmt <= 0.02) shieldLook = SHIELD_N[s.shieldLook] ? s.shieldLook + (s.shieldStyle === 'pile' ? ':pile' : '') : null;   // (kept while it fades out)
+    for (const k in balls) balls[k].group.visible = false;
+    if (shieldLook && shieldAmt > 0.02) {
+      const [lk, pile] = shieldLook.split(':'), flick = !(sh > 0 && sh < 1.2 && Math.sin(time * 28) <= 0);
+      const b = balls[shieldLook] || (balls[shieldLook] = pile ? createShieldPile(lk) : createShieldBall(lk));
+      if (!b.group.parent) group.add(b.group);
+      b.group.visible = true;
+      if (pile) { b.update(time, shieldAmt, runAmt, flick); if (flick && shieldAmt > 0.6) rig.visible = false; }   // (in the pile: hidden; it shows while the pile blinks out)
+      else b.update(time, shieldAmt, 1 + Math.sin(time * 6) * 0.03, flick);
+    }
+    bubble.visible = shieldAmt > 0.02 && !shieldLook;
     if (bubble.visible) {
       const wob = 1 + Math.sin(time * 6) * 0.03;
       const pop = shieldAmt < 1 ? (1 + (1 - shieldAmt) * 0.25) : 1;
@@ -3139,4 +3325,4 @@ function createGiantFishModel() {
   };
 }
 
-export { WOLF_TYPES, ghostMaterial, disposeModel, createKittyModel, createWolfModel, createWolfRig, newWolfState, createItemModel, createReviveCircleModel, createPortalModel, createCrownPickupModel, createGiantFishModel, createChestModel };
+export { WOLF_TYPES, ghostMaterial, disposeModel, createKittyModel, createShieldPile, createPileBits, shieldLeafGeo, createWolfModel, createWolfRig, newWolfState, createItemModel, createReviveCircleModel, createPortalModel, createCrownPickupModel, createGiantFishModel, createChestModel };

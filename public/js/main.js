@@ -6,7 +6,7 @@ import { updateEnemies, nearestEnemyDist, applyEnemyState, turnIn, turnedAgo } f
 import { createSim, stepSim, predictPlayer, loadLevel, CHAIN_SOFT, CHAIN_LEN, chainLinks, vsScore } from './shared/sim.js';
 import { hellWaves, WAVE_SPEED } from './shared/waves.js';
 import { pregenNext } from './levelpregen.js';
-import { ghostMaterial, disposeModel, createKittyModel, createWolfRig, newWolfState, createItemModel, createReviveCircleModel, createPortalModel, createCrownPickupModel, createGiantFishModel, createChestModel } from './models.js';
+import { ghostMaterial, disposeModel, createKittyModel, createPileBits, createWolfRig, newWolfState, createItemModel, createReviveCircleModel, createPortalModel, createCrownPickupModel, createGiantFishModel, createChestModel } from './models.js';
 import { createWolfPack } from './wolfpack.js';
 import { buildWorld, setupLighting } from './world.js';
 import { createEffects } from './effects.js';
@@ -74,6 +74,8 @@ window.addEventListener('resize', () => {
 
 const lighting = setupLighting(scene);
 const effects = createEffects(scene);
+const pileBits = createPileBits();   // (leaves / snow off the lanes' piles as a kitty goes in or out)
+scene.add(pileBits.group);
 const audio = createAudio();
 const ui = createUI(document.getElementById('ui'));
 // vote to kill a kitty standing still: from its card, or the spectate bar while watching it (updateWatchLabel)
@@ -1047,7 +1049,7 @@ function handleEvents(events) {
       }
       case 'shieldEnd': {
         const p = playerById(ev.playerId);
-        if (p) effects.shieldPop(p.x, p.z);
+        if (p) effects.shieldPop(p.x, p.z, shieldLook(sim.levelData));
         audio.play('shieldEnd');
         break;
       }
@@ -1778,6 +1780,14 @@ function fishFinished() {
 const _seenCircles = new Set();
 const _sunDir = { x: 0, y: 0, z: 0 };
 const _kitArgs = {}; // reused kitty model.update() args (the model only reads them)
+// the leaf / snow pile in the lane (levelData.piles) a point is in, if any (the same test as maze.js inPile)
+function pileAt(ld, x, z) {
+  const ps = ld && ld.piles, r2 = CFG.PILE_RADIUS * CFG.PILE_RADIUS;
+  if (ps) for (const q of ps) if ((x - q.x) ** 2 + (z - q.z) ** 2 < r2) return q;
+  return null;
+}
+// the shield's look in this level's season (models.js createShieldPile): fall a pile of leaves, winter a pile of snow, else the bubble
+const shieldLook = (ld) => (!ld || ld.finale || (sim && sim.hell) ? null : ld.theme === 1 ? 'leaves' : ld.theme === 2 ? 'snow' : null);   // (level 9 and hell: the blue bubble)
 // 8+ wins backpack passengers: the other players' colours (more than PACK_MAX others: the PACK_MAX with the lowest
 // scoreboard score, ties by player order, shown in player order; solo: a few default cats). Returns the kitty's
 // cached array, replaced only when the chosen set changes (the model rebuilds the heads on a new array).
@@ -2014,7 +2024,14 @@ function syncVisuals(dt, alpha) {
     ka.speed01 = gliding ? 0 : eat && eat.walking ? 0.45 : Math.min(1, speed / (CFG.KITTY_SPEED * 1.2));
     ka.moving = (p.moving && !gliding) || !!(eat && eat.walking); ka.munch = !!(eat && eat.munch); ka.bites = k.bites | 0;
     ka.skates = !!sim.levelData.ice && !(sim.levelData.iceZMax != null && z > sim.levelData.iceZMax);   // (not on Run + Skate level 9's run half)
-    ka.boots = Math.round(((p.speedMult || 1) - 1) / CFG.SPEED_BOOST); ka.invuln = p.invuln; ka.shield = p.shield; ka.time = t;
+    ka.boots = Math.round(((p.speedMult || 1) - 1) / CFG.SPEED_BOOST); ka.invuln = p.invuln; ka.shield = p.shield; ka.shieldLook = shieldLook(sim.levelData); ka.shieldStyle = 'pile';
+    // climbing onto or dropping off a spring tree: its leaves burst off the canopy (not the final run's tree)
+    const upTree = sim.levelData.theme === 4 && !sim.levelData.finale && inTree(sim.levelData, x, z);
+    if (upTree !== (k.upTree ?? upTree)) pileBits.burst(x, z, 'spring', 1.7);
+    k.upTree = upTree;
+    // into or out of a leaf / snow pile in the lane: a burst of its leaves / snow (not on a level's first frame)
+    const inPileNow = pileAt(sim.levelData, x, z);
+    if (inPileNow !== (k.pile ?? null)) { const q = inPileNow || k.pile; if (k.pile !== undefined && q) pileBits.burst(q.x + (x - q.x) * 0.6, q.z + (z - q.z) * 0.6, q.kind); k.pile = inPileNow; } ka.time = t;
     ka.crown = !!p.crowned; ka.crownStones = Math.max(0, Math.min(5, wins - 1)); ka.aura = wins >= 3; ka.auraColor = k.fx; ka.sunglasses = (!easy && wins >= 5) || cos.has('shades'); ka.rainbowBoots = (!easy && wins >= 7) || cos.has('rboots'); ka.auraCycle = !easy && wins >= 6;
     ka.backpack = wins >= 8; ka.packColors = ka.backpack ? packColors(k, p) : null;
     // easy: a bronze crown (the same stones), reading glasses (5), golden boots (7), yarn balls in the backpack (8; one
@@ -3146,6 +3163,7 @@ function tick(dt) {
   syncVisuals(vdt, alpha);
   updateTargetMarker(vdt);
   effects.update(vdt);
+  pileBits.update(vdt);
   updateCamera(dt, alpha);
   updateWatchLabel();
   updateJoinBtn();

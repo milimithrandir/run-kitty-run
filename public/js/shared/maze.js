@@ -1,4 +1,4 @@
-import { CFG, levelParams, SKATE_FINAL_LEVEL, FINAL_MODES, SAME_SEASON_FV, RUN_RAMP_FV, ANYONE_MEDIC_FV, MEDIC_GIFT_FV, QUICK_START_FV, HEART_FV, HALF_HEART_FV, STRETCH_REST_FV, RUN_REST_FV, EVEN_WALKS_FV, ITEMS_INSIDE_FV, WALL_BAND_FV, stageOf } from './config.js';
+import { CFG, levelParams, SKATE_FINAL_LEVEL, FINAL_MODES, SAME_SEASON_FV, RUN_RAMP_FV, ANYONE_MEDIC_FV, MEDIC_GIFT_FV, QUICK_START_FV, HEART_FV, HALF_HEART_FV, STRETCH_REST_FV, RUN_REST_FV, EVEN_WALKS_FV, ITEMS_INSIDE_FV, WALL_BAND_FV, SEASONS_FV, stageOf } from './config.js';
 import { createRng, hashSeed, ipow, hyp, legPoint } from './rng.js';   // (hyp: Math.hypot the same in every browser)
 import { buildPlan, patternPose, patternSpeed } from './enemies.js';
 
@@ -33,7 +33,8 @@ const ICE_THEME = 2;              // Snowy Peaks
 const TREE_THEME = 1;             // Autumn Grove: one climbable tree per lane
 const ICE_RAMP = 0.3;              // ice levels: how much of the usual toward-the-goal difficulty ramp applies
 const SPRING_THEME = 4;
-// Seasons: summer meadow, autumn (climbable trees), winter (the ice rink), spring blossom, repeat.
+// Seasons: summer meadow, autumn (climbable trees; version 25+: leaf piles), winter (the ice rink; version 25+: snow piles on
+// foot), spring blossom (version 25+: the climbable trees), repeat.
 // (Theme 3, the neon night garden, is out of the rotation.)
 const THEME_ORDER = [0, TREE_THEME, ICE_THEME, SPRING_THEME];   // Run only: meadow, autumn, snow, spring
 const SKATE_THEME_ORDER = [ICE_THEME, SPRING_THEME, 0, TREE_THEME];   // Skate only (finale version 12+): winter, spring, summer, autumn
@@ -1330,6 +1331,7 @@ function placeItemsCapped(rng, lvl, n, cap, boots = true, inside = false) {
     for (const t of items) if (hyp(t.x - x, t.z - z) < 6) return false;
     if (collideCircle(lvl, x, z, CFG.ITEM_RADIUS + 0.15).hit) return false;
     for (const t of lvl.trees || []) if (hyp(t.x - x, t.z - z) < CFG.TREE_RADIUS + 1) return false;
+    for (const t of lvl.piles || []) if (hyp(t.x - x, t.z - z) < CFG.PILE_RADIUS + 1) return false;   // (not hidden in a pile)
     return true;
   };
   for (let k = 0; k < n; k++) {
@@ -1359,6 +1361,7 @@ function placeItems(rng, lvl, p) {
     for (const t of items) if (hyp(t.x - x, t.z - z) < 6) return false;
     if (collideCircle(lvl, x, z, CFG.ITEM_RADIUS + 0.15).hit) return false;
     for (const t of lvl.trees || []) if (hyp(t.x - x, t.z - z) < CFG.TREE_RADIUS + 1) return false; // not hidden under a canopy
+    for (const t of lvl.piles || []) if (hyp(t.x - x, t.z - z) < CFG.PILE_RADIUS + 1) return false;   // (not hidden in a pile)
     return true;
   };
   const types = [['boots', 5], ['life', 2], ['shield', 3]];
@@ -1401,6 +1404,32 @@ function placeTrees(rng, legs) {
     trees.push({ ...legPoint(l, v, s), leg: i });
   }
   return trees;
+}
+
+// Fall and winter levels on foot (version 25+): a leaf (fall) or snow (winter) pile on a third of the lanes (rounded), one a
+// lane (not the final stretch), somewhere in the middle of the leg, off to one side. A kitty in it (within
+// CFG.PILE_RADIUS of its middle) is hidden and wolves can't reach it.
+function placePiles(rng, legs, kind) {
+  const W = CFG.RING_WIDTH;
+  const lat = W / 2 - CFG.WALL_THICKNESS / 2 - CFG.PILE_RADIUS - 0.4;   // keep the pile off the walls
+  const open = [];
+  for (let i = 0; i < legs.length - 1; i++) if (legs[i].len >= 2 * W) open.push(i);
+  for (let i = open.length - 1; i > 0; i--) { const j = Math.floor(rng.next() * (i + 1)); [open[i], open[j]] = [open[j], open[i]]; }
+  return open.slice(0, Math.round(open.length / 3)).sort((a, b) => a - b).map((i) => {
+    const l = legs[i], s = rng.range(W, l.len - W), v = rng.range(-lat, lat);
+    return { ...legPoint(l, v, s), leg: i, kind };
+  });
+}
+
+function inPile(levelData, x, z) {
+  const t = levelData.piles;
+  if (!t || !t.length) return false;
+  const r2 = CFG.PILE_RADIUS * CFG.PILE_RADIUS;
+  for (let i = 0; i < t.length; i++) {
+    const dx = x - t[i].x, dz = z - t[i].z;
+    if (dx * dx + dz * dz < r2) return true;
+  }
+  return false;
 }
 
 function inTree(levelData, x, z) {
@@ -1517,7 +1546,19 @@ function generateCombo(L, seed, v = 3) {
 function generateLevel(level, seed, mode = 'mixed', fv = 0) {
   const ld = generateLevelStage(level, seed, mode, fv);
   if ((fv | 0) >= HEART_FV) guaranteeHeart(ld, seed);
+  if ((fv | 0) >= SEASONS_FV) guaranteeShields(ld, seed);   // (after the heart: its shields come from boots, so the heart stays)
   return ld;
+}
+// version 25+: a fall or winter level (on foot or a rink, not a final run) with fewer shields than SEASON_SHIELDS (levels
+// 1-4: the first round of the seasons, 2; levels 5-8: 1) gets them: some of its boots (not a tree's), picked by the
+// level's seed, become shields in the same spots (never more than ITEM_CAP)
+const SEASON_SHIELDS = (level) => (level <= 4 ? 2 : 1);
+function guaranteeShields(ld, seed) {
+  const items = ld && ld.items;
+  if (!Array.isArray(items) || ld.finale || (ld.theme !== TREE_THEME && ld.theme !== ICE_THEME)) return;
+  const pool = items.filter((it) => it.type === 'boots' && !it.tree && !it.mega);
+  for (let k = items.filter((it) => it.type === 'shield').length, i = 0; k < SEASON_SHIELDS(ld.level || 1) && pool.length; k++, i++)
+    pool.splice((hashSeed(seed, ld.level || 0, 'shield', i) >>> 0) % pool.length, 1)[0].type = 'shield';
 }
 function generateLevelStage(level, seed, mode, fv) {
   const st = stageOf(mode, fv, level);
@@ -1599,7 +1640,11 @@ function generateLevelCore(level, seed, mode = 'mixed', fv = 0, season = null, r
     const t = straight.tree, leg = legs.findIndex((l) => l.ox === t.x);
     lvl.trees = [{ x: t.x, z: t.z, leg }];
   } else {
-    lvl.trees = lvl.theme === TREE_THEME && !lvl.ice ? placeTrees(createRng(hashSeed(seed, L, 'trees')), legs) : [];
+    // (version 25+: the trees in spring instead of fall, and on foot a leaf pile in fall / a snow pile in winter on some
+    // lanes; rules: the game's own version, Run + Skate's day halves hold fv lower)
+    const seasons = (+rules || 0) >= SEASONS_FV;
+    lvl.trees = lvl.theme === (seasons ? SPRING_THEME : TREE_THEME) && !lvl.ice ? placeTrees(createRng(hashSeed(seed, L, 'trees')), legs) : [];
+    if (seasons && !lvl.ice && (lvl.theme === TREE_THEME || lvl.theme === ICE_THEME)) lvl.piles = placePiles(createRng(hashSeed(seed, L, 'piles')), legs, lvl.theme === TREE_THEME ? 'leaves' : 'snow');
   }
   // every ice level has pattern wolves (Run + Skate's winter levels = Skate only's wolves for that level number;
   // the boss run has them in every mode). CLASSIC_RUN_SKATE_ICE brings back the old Run + Skate winter levels:
@@ -1922,7 +1967,7 @@ function mazeSelfTest(levels = 12, modes = ['mixed', 'ice']) {
 const levelHashes = new WeakMap();   // levelData -> its hash (computed once: it stringifies every wolf)
 function levelHash(ld) {
   let h = levelHashes.get(ld);
-  if (h === undefined) { h = hashSeed(JSON.stringify([(ld.enemies || []).map(({ frame, ...s }) => s), ld.items || []])); levelHashes.set(ld, h); }
+  if (h === undefined) { h = hashSeed(JSON.stringify([(ld.enemies || []).map(({ frame, ...s }) => s), ld.items || [], ...(ld.piles && ld.piles.length ? [ld.piles] : [])])); levelHashes.set(ld, h); }   // (piles: version 25+ only, older hashes unchanged)
   return h;
 }
 
@@ -1977,4 +2022,4 @@ function pathTrack(ld, x, z, hint = -1) {
   return { f: Math.max(0, Math.min(1, at / pi.total)), i: seg };
 }
 
-export { generateLevel, collideCircle, locate, inCenter, onIce, inTree, mazeSelfTest, levelHash, pathProgress, pathTrack };
+export { generateLevel, collideCircle, locate, inCenter, onIce, inTree, inPile, mazeSelfTest, levelHash, pathProgress, pathTrack };

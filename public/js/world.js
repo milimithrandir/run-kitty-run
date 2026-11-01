@@ -3,7 +3,7 @@ import { CFG } from './shared/config.js';
 import { createRng, hashSeed, TAU } from './shared/rng.js';
 import { locate, collideCircle } from './shared/maze.js';
 import { QUALITY } from './device.js';
-import { WOLF_TYPES } from './models.js';
+import { WOLF_TYPES, createShieldPile, shieldLeafGeo } from './models.js';
 
 // world.js — maze scenery, decor, ambient particles and lighting. (owner: world agent)
 //
@@ -2068,8 +2068,26 @@ function buildParticles(theme, rng, radius, T, box = null) {
   return { points: pts, update };
 }
 
-// Climbable trees (autumn levels): a thick trunk and a broad, flat-topped canopy the kitties stand on (CLIMB_Y).
+// Fall and winter lanes on foot (levelData.piles, version 25+): the shield's leaf / snow pile (models.js createShieldPile),
+// about 0.95 across its foot (a touch inside CFG.PILE_RADIUS: you're safe from its edge on, and a kitty walking in
+// disappears into it), each turned its own way
+function buildLanePiles(levelData) {
+  return (levelData.piles || []).map((p, i) => {
+    const pile = createShieldPile(p.kind, true, createRng(3).next);   // (with three bumps on top and leaves scattered round its foot; the same heap every time)
+    pile.update(0, 1, 0, true);
+    pile.group.position.set(p.x, 0, p.z);
+    pile.group.scale.multiplyScalar(1.55).multiply(new THREE.Vector3(1, 0.8, 1));   // (lower than the shield's heap: a pile on the ground)
+    pile.group.rotation.y = i * 2.4;
+    return pile.group;
+  });
+}
+
+// Climbable trees (autumn levels; spring from level version 25, green and leafy with some blossom): a thick trunk and a broad, flat-topped canopy the kitties stand on (CLIMB_Y).
 const CLIMB_Y = 2.2;
+const SPRING_GREENS = [0x9ccf6a, 0x86c25e, 0xaed67a];
+// spring trees: mostly fresh green leaves (the piles' leaf shape), about one in five a pink / white blossom
+// (deep green, so the tree stands out from the spring grass)
+const SPRING_CANOPY = [0x2c6129, 0x346f30, 0x265625], SPRING_LEAVES = [0x3c8237, 0x4a9141, 0x336f30, 0x57a04b, 0x2e6a2c], SPRING_BLOSSOM = [0xffb7d5, 0xff9ec7, 0xfff0f6], SPRING_LEAF_N = 420, SPRING_TOP_N = 460;
 function buildClimbTrees(levelData, theme, T) {
   const trees = levelData.trees || [];
   if (!trees.length) return [];
@@ -2085,6 +2103,7 @@ function buildClimbTrees(levelData, theme, T) {
   const blobs = new THREE.InstancedMesh(blobGeo, leafMat, trees.length * per);
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), pos = new THREE.Vector3(), sc = new THREE.Vector3();
   const c = new THREE.Color();
+  const spring = theme === THEMES[4] && !levelData.finale, puffs = trees.map(() => []);   // spring (level version 25+): leafy trees
   trees.forEach((t, i) => {
     m.compose(pos.set(t.x, 0, t.z), q.setFromEuler(e.set(0, rng.range(0, TAU), 0)), sc.set(1, 1, 1));
     trunks.setMatrixAt(i, m);
@@ -2097,9 +2116,59 @@ function buildClimbTrees(levelData, theme, T) {
       }
       m.compose(pos.set(x, y, z), q.setFromEuler(e.set(0, rng.range(0, TAU), 0)), sc.set(sx, sy, sz));
       blobs.setMatrixAt(i * per + k, m);
+      if (spring) puffs[i].push({ x, y, z, sx, sy, sz });
       blobs.setColorAt(i * per + k, c.set(theme.crowns[(i + k) % theme.crowns.length]).multiplyScalar(k ? 0.9 : 1));
+      if (spring) blobs.setColorAt(i * per + k, c.set(k && (k + i) % 5 === 0 ? SPRING_BLOSSOM[(i + k) % 2] : SPRING_CANOPY[(i + k) % SPRING_CANOPY.length]).multiplyScalar(k ? 0.95 : 1));   // deeper green under the leaves, now and then a pink puff
     }
   });
+  if (spring) {
+    // leaves all over the canopy: lying on its puffs (on their surface, never under them or floating off them), and a low
+    // leaf pile on top (each tree its own size) a kitty up the tree sinks into up to its neck
+    const leaves = new THREE.InstancedMesh(T.g(shieldLeafGeo()), T.m(coversWolves(new THREE.MeshStandardMaterial({ roughness: 0.8, flatShading: true, side: THREE.DoubleSide }))), trees.length * (SPRING_LEAF_N + SPRING_TOP_N));
+    const n = new THREE.Vector3(), tg = new THREE.Vector3(), bt = new THREE.Vector3(), M3 = new THREE.Matrix4(), q2 = new THREE.Quaternion(), dir = new THREE.Vector3();
+    const inside = (ps, x, y, z, skip) => ps.some((b, j) => j !== skip && ((x - b.x) / b.sx) ** 2 + ((y - b.y) / b.sy) ** 2 + ((z - b.z) / b.sz) ** 2 < 0.92);
+    let at = 0;
+    const tops = [];
+    const put = (bloom, size) => {
+      leaves.setMatrixAt(at, m.compose(pos, q, sc.setScalar(size)));
+      leaves.setColorAt(at++, c.set(bloom ? SPRING_BLOSSOM[at % 3] : SPRING_LEAVES[at % SPRING_LEAVES.length]).multiplyScalar(rng.range(0.85, 1.05)));
+    };
+    trees.forEach((t, i) => {
+      const ps = puffs[i];
+      for (let k = 0, tries = 0; k < SPRING_LEAF_N && tries < SPRING_LEAF_N * 6; tries++) {
+        const j = (rng.next() * ps.length) | 0, b = ps[j];
+        dir.set(rng.range(-1, 1), rng.range(-0.25, 1), rng.range(-1, 1)).normalize();   // (the top and sides of a puff, not its underside)
+        pos.set(b.x + dir.x * b.sx, b.y + dir.y * b.sy, b.z + dir.z * b.sz);
+        if (inside(ps, pos.x, pos.y, pos.z, j)) continue;   // (inside another puff: nobody would see it)
+        n.set(dir.x / b.sx, dir.y / b.sy, dir.z / b.sz).normalize().lerp(dir.set(0, 1, 0), 0.4).normalize();   // (eased toward flat: no leaf on edge to the camera)
+        pos.addScaledVector(n, 0.03);
+        tg.set(-n.z, 0, n.x).normalize(); if (tg.lengthSq() < 0.01) tg.set(1, 0, 0); bt.crossVectors(n, tg).normalize(); tg.crossVectors(bt, n);
+        q.setFromRotationMatrix(M3.makeBasis(bt, n, tg)).multiply(q2.setFromEuler(e.set(rng.range(-0.5, 0.5), rng.range(0, TAU), 0)));
+        const bloom = rng.next() < 0.2;
+        put(bloom, bloom ? rng.range(0.13, 0.18) : rng.range(0.17, 0.25));
+        k++;
+      }
+      // the pile on top: a low dome (0.75-1 of the pad across, 0.28-0.42 high: never over a kitty's head), its leaves lying
+      // on it along the slope like the lanes' piles (models.js createShieldPile), over a green core so no gaps show through
+      const pr = (R + 0.1) * rng.range(0.75, 1), ph = rng.range(0.28, 0.42);
+      tops.push({ x: t.x, y: CLIMB_Y - 0.06, z: t.z, sx: pr * 0.9, sy: ph * 0.85, sz: pr * 0.9, ry: rng.range(0, TAU), color: new THREE.Color(SPRING_CANOPY[i % SPRING_CANOPY.length]).multiplyScalar(1.1) });
+      for (let k = 0; k < SPRING_TOP_N; k++) {
+        const a = rng.range(0, TAU), d = pr * Math.sqrt(rng.next()), top = ph * Math.pow(Math.max(0, 1 - (d / pr) ** 2), 0.75);
+        pos.set(t.x + Math.cos(a) * d, CLIMB_Y - 0.06 + top * rng.range(0.75, 1) + 0.02, t.z + Math.sin(a) * d);
+        // lying on the dome (turned to its slope where it is, outward whichever side), any way round, a little ruffled
+        const sl = 1.6 * (d / pr) * (ph / pr);
+        n.set(Math.cos(a) * sl + rng.range(-0.25, 0.25), 1, Math.sin(a) * sl + rng.range(-0.25, 0.25)).normalize();
+        q.setFromUnitVectors(dir.set(0, 1, 0), n).multiply(q2.setFromAxisAngle(dir, rng.range(0, TAU)));
+        const bloom = rng.next() < 0.18;
+        put(bloom, bloom ? rng.range(0.13, 0.17) : rng.range(0.16, 0.23));
+      }
+    });
+    leaves.count = at;
+    leaves.castShadow = true;
+    trunks.castShadow = blobs.castShadow = true; blobs.receiveShadow = true;
+    const cores = makeInstanced(T.g(new THREE.SphereGeometry(1, 14, 8, 0, TAU, 0, Math.PI / 2)), T.m(coversWolves(new THREE.MeshStandardMaterial({ roughness: 0.9, flatShading: true }))), tops, { cast: true, receive: true });
+    return [trunks, blobs, leaves, cores];
+  }
   trunks.castShadow = blobs.castShadow = true;
   blobs.receiveShadow = true;
   if (!levelData.finale) return [trunks, blobs];
@@ -2642,7 +2711,8 @@ function buildWorld(scene, levelData, hero) {
   for (const m of checkpoints) group.add(m);
   const hallway = buildHallway(levelData, T, rng);
   for (const m of hallway) group.add(m);
-  for (const m of buildClimbTrees(levelData, base, T)) group.add(m);   // the halfway tree: smouldering in hell (buildClimbTrees), the one refuge
+  for (const m of buildClimbTrees(levelData, base, T)) group.add(m);
+  for (const m of buildLanePiles(levelData)) group.add(m);   // the halfway tree: smouldering in hell (buildClimbTrees), the one refuge
   for (const m of buildWalls(levelData, theme, T)) group.add(m);
   const lanterns = buildLanterns(levelData, theme, T, rng);
   for (const m of lanterns.meshes) group.add(m);

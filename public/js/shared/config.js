@@ -48,7 +48,8 @@ const CFG = {
   CHEST_ARM: 1.0,            // seconds before it can be opened (so everyone sees it first)
   CHEST_LOOT: [8, 4, 44],    // pickups it drops: this many + this many per kitty, at most this many
   CROWN_RADIUS: 1.0,         // pickup radius of the crown over the goal room's middle
-  TREE_RADIUS: 1.7,          // autumn levels: a kitty this close to a climbable tree's trunk is up in it (safe)         // pickup radius of the crown over the goal's center
+  PILE_RADIUS: 1.25,         // fall / winter levels on foot (version 25+): a kitty this close to a leaf or snow pile's middle is in it (safe; from its edge on)
+  TREE_RADIUS: 1.7,          // spring levels (autumn before version 25): a kitty this close to a climbable tree's trunk is up in it (safe)         // pickup radius of the crown over the goal's center
 
   // Flow
   LEVEL_CLEAR_TIME: 2.4,     // seconds of celebration before next level
@@ -153,7 +154,12 @@ const WAVE10_FV = 23;
 // 24: the final runs on foot (Run only's level 9, Hell Run, Run + Skate's running half): a wolf's move to a wall ends
 // anywhere up to 0.7 from it, not right against it (they lined the wall up; maze.js RUN_FINALE_BAND)
 const WALL_BAND_FV = 24;
-const LATEST_FV = 24;   // the level version a game on this device plays (offline; online: the newest every member has)
+// 25: the seasons: the climbable trees (with their boots, ITEMS_AUTUMN) move from fall to spring; fall and winter levels on
+// foot (Run only's, Run + Skate's day halves) get a leaf / snow pile on a third of their lanes (one a lane) a
+// kitty hides in (CFG.PILE_RADIUS, wolves can't reach it); every fall and winter level (the rinks too) has at least
+// SEASON_SHIELDS shields (levels 1-4: 2, 5-8: 1). Not the final runs or hell (maze.js placePiles, inPile, guaranteeShields)
+const SEASONS_FV = 25;
+const LATEST_FV = 25;   // the level version a game on this device plays (offline; online: the newest every member has)
 // Hell (protocol 25): Run only's or Skate only's level 9 (the final run) over and over. Clearing hell level n starts
 // hell level n + 1, a new final run of its own (its own seed: another layout, wolves and pickups), up to HELL_LEVELS;
 // clearing the last one wins. A game's result is how far it got: the level, and how far along the map the team got on it (sim.far).
@@ -194,6 +200,6 @@ const stageStep = (mode, fv, level, night = false) => (mode === 'mixed' && (fv |
 //  20 = Run + Skate's night half in the day's season (finale version 14, rf 14)
 //  21 = the lottery chest on a lucky checkpoint (events chest / chestOpen; only in rooms where everyone has 21+)
 //  22 = the running final run's wolves speed up toward the goal room, to 92% (finale version 15, rf 15)
-const PROTOCOL_VERSION = 35;   // 35: versus (lobbies with teams, start messages and snapshots vs, players' team: shared/sim.js vsTeam); 34: chained games' longer chain, each link dragged by its own two kitties (shared/sim.js chainPull); 33: chained games (lobbies with chain, start messages cn: shared/sim.js chainPull); 32: the final runs' wolves stop up to 0.7 from a wall, not right against it (finale version 24, rf 24); 31: running levels' walks average the same every level, no pickups outside the play area, Hell Run's hell 6 waves 10 s apart (finale version 23, rf 23); 30: the running final runs' run wolves rest at least 0.42 s (finale version 22, rf 22); 29: a heart in each half of Run + Skate's final level, the final runs' run wolves rest longer at the least (finale version 21, rf 21); 28: on ice, boots turn faster too (finale version 20, rf 20); 27: easy hell (a hell level starts over when everyone is down; the wipe event carries far); 26: hell's wolf waves (shared/waves.js; start messages carry hw, a hell game's sim.waves) and a heart on every level (finale version 19, rf 19); 25: hell (Run only's / Skate only's final run over and over, HELL_LEVELS; start messages carry hell, snapshots hf) and Run only level 9's wolves off at once (finale version 18, rf 18); 24: the broken checkpoint's gift for a medic (finale version 17, rf 17); 23: any kitty repairs Run + Skate level 9's broken checkpoint (finale version 16, rf 16)
+const PROTOCOL_VERSION = 36;   // 36: the seasons: trees in spring, leaf / snow piles, shields in fall and winter (finale version 25, rf 25); 35: versus (lobbies with teams, start messages and snapshots vs, players' team: shared/sim.js vsTeam); 34: chained games' longer chain, each link dragged by its own two kitties (shared/sim.js chainPull); 33: chained games (lobbies with chain, start messages cn: shared/sim.js chainPull); 32: the final runs' wolves stop up to 0.7 from a wall, not right against it (finale version 24, rf 24); 31: running levels' walks average the same every level, no pickups outside the play area, Hell Run's hell 6 waves 10 s apart (finale version 23, rf 23); 30: the running final runs' run wolves rest at least 0.42 s (finale version 22, rf 22); 29: a heart in each half of Run + Skate's final level, the final runs' run wolves rest longer at the least (finale version 21, rf 21); 28: on ice, boots turn faster too (finale version 20, rf 20); 27: easy hell (a hell level starts over when everyone is down; the wipe event carries far); 26: hell's wolf waves (shared/waves.js; start messages carry hw, a hell game's sim.waves) and a heart on every level (finale version 19, rf 19); 25: hell (Run only's / Skate only's final run over and over, HELL_LEVELS; start messages carry hell, snapshots hf) and Run only level 9's wolves off at once (finale version 18, rf 18); 24: the broken checkpoint's gift for a medic (finale version 17, rf 17); 23: any kitty repairs Run + Skate level 9's broken checkpoint (finale version 16, rf 16)
 
-export { CFG, MAP_RINGS, levelParams, PLAYER_COLORS, PLAYER_NAMES, NET, SKATE_FINAL_LEVEL, FINAL_MODES, PROTOCOL_VERSION, DAY_NIGHT_FV, SAME_SEASON_FV, RUN_RAMP_FV, ANYONE_MEDIC_FV, MEDIC_GIFT_FV, QUICK_START_FV, HEART_FV, ICE_TURN_FV, HALF_HEART_FV, STRETCH_REST_FV, RUN_REST_FV, EVEN_WALKS_FV, ITEMS_INSIDE_FV, WAVE10_FV, WALL_BAND_FV, LATEST_FV, HELL_LEVELS, HELL_MODES, stageOf, stageStep };
+export { CFG, MAP_RINGS, levelParams, PLAYER_COLORS, PLAYER_NAMES, NET, SKATE_FINAL_LEVEL, FINAL_MODES, PROTOCOL_VERSION, DAY_NIGHT_FV, SAME_SEASON_FV, RUN_RAMP_FV, ANYONE_MEDIC_FV, MEDIC_GIFT_FV, QUICK_START_FV, HEART_FV, ICE_TURN_FV, HALF_HEART_FV, STRETCH_REST_FV, RUN_REST_FV, EVEN_WALKS_FV, ITEMS_INSIDE_FV, WAVE10_FV, WALL_BAND_FV, SEASONS_FV, LATEST_FV, HELL_LEVELS, HELL_MODES, stageOf, stageStep };

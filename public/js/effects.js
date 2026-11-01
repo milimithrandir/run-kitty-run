@@ -14,6 +14,7 @@ const PX = 0, PY = 1, PZ = 2, VX = 3, VY = 4, VZ = 5, AGE = 6, LIFE = 7, S0 = 8,
   GRAV = 10, DRAG = 11, CR = 12, CG = 13, CB = 14, A0 = 15, ROT = 16, SPIN = 17, PH = 18, FREQ = 19,
   SHAPE = 20, OX = 21, OZ = 22, OMEGA = 23;
 const S = 24;
+const SHIELD_LEAVES = [[0.86, 0.42, 0.16], [0.76, 0.26, 0.14], [0.9, 0.6, 0.2], [0.82, 0.7, 0.28]];   // shieldPop: autumn leaf colours (0..1)
 const SHAPE_ROUND = 0, SHAPE_TWINKLE = 1, SHAPE_RECT = 2, SHAPE_HEART = 3, SHAPE_FISH = 4, SHAPE_STAR = 5, SHAPE_SPARKLE = 6;
 
 const TAU = Math.PI * 2;
@@ -544,7 +545,22 @@ function createEffects(scene) {
     }
   }
 
-  function shieldPop(x, z) {
+  // kind (the level's season, models.js SHIELD_LOOK): 'leaves' = the leaf ball bursts, leaves fluttering down;
+  // 'snow' = the snowball bursts into a soft puff of snow; otherwise the blue bubble's sparkle
+  function shieldPop(x, z, kind) {
+    if (kind === 'leaves' || kind === 'snow') {
+      const snow = kind === 'snow';
+      for (let i = 0; i < (snow ? 26 : 20); i++) {
+        const u = rand() * 2 - 1, a = rand() * TAU, s = Math.sqrt(1 - u * u), nx = Math.cos(a) * s, ny = Math.abs(u), nz = Math.sin(a) * s, sp = rr(1.6, 3.2);
+        const p = emit(soft, x + nx * 0.6, 0.45 + ny * 0.5, z + nz * 0.6, nx * sp, ny * sp + rr(0.5, 1.5), nz * sp,
+          rr(0.7, 1.1), snow ? rr(0.12, 0.2) : rr(0.13, 0.18), snow ? 0.3 : 0.12, ...(snow ? [0.96, 0.98, 1] : SHIELD_LEAVES[i % SHIELD_LEAVES.length]), snow ? 0.8 : 0.95);
+        if (p < 0) break;
+        soft.data[p + GRAV] = snow ? -2.5 : -2; soft.data[p + DRAG] = snow ? 3 : 2.4;
+        if (!snow) { soft.data[p + SHAPE] = SHAPE_RECT; soft.data[p + SPIN] = rr(-7, 7); }
+      }
+      if (snow) ring(x, 0.06, z, 0xeef6ff, 0.5, 1.8, 0.4, 0.8, 0.6, 1);
+      return;
+    }
     ring(x, 0.06, z, 0x7fe9ff, 0.6, 2.2, 0.35, 0.8, 0.9, 1);
     for (let i = 0; i < 32; i++) {
       const u = rand() * 2 - 1, a = rand() * TAU, s = Math.sqrt(1 - u * u);

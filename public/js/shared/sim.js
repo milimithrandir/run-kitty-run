@@ -1,6 +1,6 @@
 import { CFG, LATEST_FV, ICE_TURN_FV, SKATE_FINAL_LEVEL, HELL_LEVELS, HELL_MODES, stageOf } from './config.js';
 import { hashSeed } from './rng.js';
-import { generateLevel, collideCircle, inCenter, onIce, inTree, pathProgress, pathTrack } from './maze.js';
+import { generateLevel, collideCircle, inCenter, onIce, inTree, inPile, pathProgress, pathTrack } from './maze.js';
 import { createEnemies, updateEnemies } from './enemies.js';
 import { hellWaves, waveHit } from './waves.js';
 
@@ -1009,7 +1009,7 @@ function stepSim(sim, inputs, dt) {
     const p = players[i];
     if (sim.state !== 'playing') break; // no deaths during the level-clear celebration
     if (!p.alive || p.inCenter || p.invuln > 0 || p.shield > 0) continue;
-    if (inTree(ld, p.x, p.z)) continue; // up a tree: safe
+    if (inTree(ld, p.x, p.z) || inPile(ld, p.x, p.z)) continue; // up a tree or in a leaf / snow pile: safe
     let hit = -1;
     if (big) {
       if (!grid) {

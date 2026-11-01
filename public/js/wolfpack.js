@@ -7,7 +7,8 @@ import * as THREE from 'three';
 // wolf type. rigs: [[rig, number of wolves using it], ...]
 const _c = new THREE.Color(), _m = new THREE.Matrix4();
 
-// A wolf under a tree: its shape shows through the leaves, dark with a light rim. Drawn after everything solid, only
+// A wolf under a tree: its shape shows through the leaves, dark with a warning orange-red rim (stands out on the dark
+// green spring canopy, its pink / white blossom and the grass; it was cream, too like the blossom). Drawn after everything solid, only
 // where a tree covers the wolf: the tree marked the pixel (stencil 2, world.js coversWolves; a kitty or wolf in front
 // of the tree takes the mark off, models.js VC_MAT) and the wolf is behind what is drawn there (GreaterDepth). Each
 // pixel once (the stencil counts up), so the parts of a wolf don't draw over one another.
@@ -25,7 +26,7 @@ function xrayMaterial() {
       void main() {
         float rim = 1.0 - abs(dot(normalize(vN + vec3(1e-5)), normalize(vV)));
         rim = smoothstep(0.35, 0.9, rim);
-        gl_FragColor = vec4(mix(vec3(0.06, 0.04, 0.08), vec3(1.0, 0.95, 0.85), rim), mix(0.4, 0.9, rim));
+        gl_FragColor = vec4(mix(vec3(0.06, 0.04, 0.08), vec3(1.0, 0.36, 0.1), rim), mix(0.45, 0.95, rim));
         #include <colorspace_fragment>
       }`,
   });
