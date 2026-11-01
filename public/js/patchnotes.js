@@ -2,6 +2,18 @@
 // When you ship something players will notice, add a line to the top entry (or start a new one).
 const PATCH_NOTES = [
   {
+    version: '1.3', date: '2026-11-01', title: 'Seasons',
+    items: [
+      'The climbable trees have moved to spring: big leafy trees with blossoms. Climb up and the wolves cannot reach you, and every tree still has a pair of boots on top',
+      'Fall levels have piles of leaves in some of the lanes, and winter levels piles of snow. Run into one and the wolves cannot catch you until you come out',
+      'In fall and winter a shield turns your kitty into a pile of leaves or a pile of snow',
+      'Fall and winter levels always have shields: at least two on levels 1 to 4, and at least one on levels 5 to 8',
+      'Leaves and snow fly up when you jump into a pile or climb a spring tree',
+      'A wolf hiding under a tree now has an orange-red outline, easier to spot among the blossoms',
+      'Online, everyone in the lobby needs the latest version for the new seasons',
+    ],
+  },
+  {
     version: '1.2.1', date: '2026-11-01', title: 'Easy checkpoints',
     items: [
       'Easy games: when everyone goes down, you start again from the furthest checkpoint your team reached on that level, not from the start of the level',
