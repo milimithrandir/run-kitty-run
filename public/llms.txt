@@ -12,7 +12,7 @@ Key facts:
 
 - [Play Run Kitty Run](https://runkittyrun.fun/): the game itself
 - [About](https://runkittyrun.fun/about): what the game is, features, FAQ
-- [How to play](https://runkittyrun.fun/how-to-play): rules, controls, items, modes, multiplayer, tips
+- [How to play](https://runkittyrun.fun/how-to-play): rules, controls, items, modes, multiplayer, Chained and Versus, tips
 - [Run Kitty Run and the Warcraft 3 custom map](https://runkittyrun.fun/warcraft-3-run-kitty-run): how the browser game relates to the WC3 map
 - [Patch notes](https://runkittyrun.fun/patch-notes): every update, newest first
 - [Support](https://runkittyrun.fun/support): help and contact
