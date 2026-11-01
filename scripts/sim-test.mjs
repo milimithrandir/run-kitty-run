@@ -2,7 +2,7 @@
 // Add new checks here rather than new scripts. Account checks use disposable temporary files and fake Stripe responses.
 // Exit code 1 if any check fails.
 import { createSim, stepSim } from '../public/js/shared/sim.js';
-import { CFG, SKATE_FINAL_LEVEL, FINAL_MODES, PLAYER_NAMES, stageStep, SEASONS_FV } from '../public/js/shared/config.js';
+import { CFG, SKATE_FINAL_LEVEL, FINAL_MODES, PLAYER_NAMES, stageStep, SEASONS_FV, HALF_TREES_FV } from '../public/js/shared/config.js';
 import { generateLevel, mazeSelfTest, collideCircle, onIce, pathProgress } from '../public/js/shared/maze.js';
 import { hyp } from '../public/js/shared/rng.js';
 import { filterChat, filterName } from '../public/js/shared/filter.js';
@@ -402,6 +402,11 @@ const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) process
       least[k] = Math.min(least[k], shields(ld));
       if (shields(ld) > 3 || !ld.items.some((it) => it.type === 'life')) least[k] = -1;
     }
+    const l8 = generateLevel(8, 41, 'run', HALF_TREES_FV), l8old = generateLevel(8, 41, 'run', SEASONS_FV), l4 = generateLevel(4, 41, 'run', HALF_TREES_FV);
+    const d8 = generateLevel(stageStep('mixed', HALF_TREES_FV, 8), 41, 'mixed', HALF_TREES_FV);
+    ok(l8.trees.length === Math.round(l8old.trees.length / 2) && l4.trees.length === l8old.trees.length && d8.trees.length === l8.trees.length
+      && l8.items.filter((it) => it.tree).length === l8.trees.length,
+      `level 8 (version ${HALF_TREES_FV}): trees on half the lanes (${l8.trees.length} of ${l8old.trees.length}, boots on each), Run + Skate by day too; level 4 all of them`);
     ok(least.a >= 2 && least.b >= 1, `seasons: fall and winter levels have at least 2 shields on levels 1-4 (${least.a}), 1 on levels 5-8 (${least.b}), at most 3, still a heart`);
     const sm = createSim({ seed: 41, startLevel: 2, mode: 'run', finales: V, players: [{ id: 1, name: 'a' }] });
     stepSim(sm, {}, CFG.TICK);

@@ -1,4 +1,4 @@
-import { CFG, levelParams, SKATE_FINAL_LEVEL, FINAL_MODES, SAME_SEASON_FV, RUN_RAMP_FV, ANYONE_MEDIC_FV, MEDIC_GIFT_FV, QUICK_START_FV, HEART_FV, HALF_HEART_FV, STRETCH_REST_FV, RUN_REST_FV, EVEN_WALKS_FV, ITEMS_INSIDE_FV, WALL_BAND_FV, SEASONS_FV, stageOf } from './config.js';
+import { CFG, levelParams, SKATE_FINAL_LEVEL, FINAL_MODES, SAME_SEASON_FV, RUN_RAMP_FV, ANYONE_MEDIC_FV, MEDIC_GIFT_FV, QUICK_START_FV, HEART_FV, HALF_HEART_FV, STRETCH_REST_FV, RUN_REST_FV, EVEN_WALKS_FV, ITEMS_INSIDE_FV, WALL_BAND_FV, SEASONS_FV, HALF_TREES_FV, stageOf } from './config.js';
 import { createRng, hashSeed, ipow, hyp, legPoint } from './rng.js';   // (hyp: Math.hypot the same in every browser)
 import { buildPlan, patternPose, patternSpeed } from './enemies.js';
 
@@ -1644,6 +1644,11 @@ function generateLevelCore(level, seed, mode = 'mixed', fv = 0, season = null, r
     // lanes; rules: the game's own version, Run + Skate's day halves hold fv lower)
     const seasons = (+rules || 0) >= SEASONS_FV;
     lvl.trees = lvl.theme === (seasons ? SPRING_THEME : TREE_THEME) && !lvl.ice ? placeTrees(createRng(hashSeed(seed, L, 'trees')), legs) : [];
+    if ((+rules || 0) >= HALF_TREES_FV && L === 8 && lvl.trees.length) {   // (version 26+: level 8, the second spring, keeps half of them)
+      const r = createRng(hashSeed(seed, L, 'halftrees')), t = lvl.trees.slice();
+      for (let i = t.length - 1; i > 0; i--) { const j = Math.floor(r.next() * (i + 1)); [t[i], t[j]] = [t[j], t[i]]; }
+      lvl.trees = t.slice(0, Math.round(t.length / 2)).sort((a, b) => a.leg - b.leg);
+    }
     if (seasons && !lvl.ice && (lvl.theme === TREE_THEME || lvl.theme === ICE_THEME)) lvl.piles = placePiles(createRng(hashSeed(seed, L, 'piles')), legs, lvl.theme === TREE_THEME ? 'leaves' : 'snow');
   }
   // every ice level has pattern wolves (Run + Skate's winter levels = Skate only's wolves for that level number;
