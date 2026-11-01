@@ -5,7 +5,7 @@ const PATCH_NOTES = [
     version: '1.3', date: '2026-11-01', title: 'Seasons',
     items: [
       'The climbable trees have moved to spring: big leafy trees with blossoms. Climb up and the wolves cannot reach you, and every tree still has a pair of boots on top',
-      'On level 8 (the second spring) the trees are only on half the lanes',
+      'The trees are on two thirds of the lanes on level 4, and on a third of them on level 8',
       'Fall levels have piles of leaves in some of the lanes, and winter levels piles of snow. Run into one and the wolves cannot catch you until you come out',
       'In fall and winter a shield turns your kitty into a pile of leaves or a pile of snow',
       'Fall and winter levels always have shields: at least two on levels 1 to 4, and at least one on levels 5 to 8',
