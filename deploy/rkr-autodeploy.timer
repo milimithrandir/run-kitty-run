@@ -1,9 +1,9 @@
 [Unit]
-Description=Run Kitty Run: poll GitHub for a new main every 30 minutes
+Description=Run Kitty Run: poll GitHub for a new main every 5 minutes
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=30min
+OnUnitActiveSec=5min
 RandomizedDelaySec=30s
 
 [Install]

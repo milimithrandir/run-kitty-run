@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs on the server as user rkr every 30 minutes (deploy/rkr-autodeploy.timer): if origin/main has moved,
+# Runs on the server as user rkr every 5 minutes (deploy/rkr-autodeploy.timer): if origin/main has moved,
 # runs deploy/deploy.sh (pull, install, restart, health check with rollback). Replaces the GitHub Action.
 set -euo pipefail
 cd /opt/run-kitty-run/app

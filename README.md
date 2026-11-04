@@ -53,7 +53,7 @@ scripts/feedback.sh          # newest last; add -n 20 for only the last 20
 - `public/` – the browser client (static files). `public/js/shared/` is the pure, deterministic game sim, used by both client and server.
 - `server/index.js` – Node server: serves `public/` and runs lobbies over WebSockets at `/ws`.
 - `deploy/` – systemd unit, Caddyfile (HTTPS), one-time `setup.sh`, `deploy.sh`, and the `rkr-autodeploy` timer that runs it when `main` moves.
-- `scripts/deploy.sh` – push `main` and deploy to the UpCloud box right away (the box also polls GitHub every 30 minutes).
+- `scripts/deploy.sh` – push `main` and deploy to the UpCloud box right away (the box also polls GitHub every 5 minutes).
 
 ## Online netcode, briefly
 
