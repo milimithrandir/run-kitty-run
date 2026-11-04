@@ -1,6 +1,6 @@
 import { CFG, PLAYER_COLORS } from './shared/config.js';
 import { fmtNum } from './account.js';
-import { TOUCH } from './device.js';
+import { TOUCH, goFullscreenLandscape } from './device.js';
 import { NATIVE, APP_VERSION, SERVER_ORIGIN, openExternal } from './platform.js';
 import { PATCH_NOTES } from './patchnotes.js';
 import { openStatsPage } from './analytics.js';
@@ -210,7 +210,7 @@ const CSS = `
   color:#fff;cursor:pointer;pointer-events:auto;}
 .rkr-hudbtn .rkr-eslash{display:none;}
 .rkr-fullbtn.rkr-on{border-color:rgba(140,220,255,.8);color:#bfeaff;}
-html.rkr-touch .rkr-fullbtn{display:none;}
+html.rkr-native .rkr-fullbtn{display:none;}
 .rkr-hud.rkr-min .rkr-hudbtn .rkr-eslash{display:inline;}
 .rkr-hud.rkr-min .rkr-tl,.rkr-hud.rkr-min .rkr-tc,.rkr-hud.rkr-min .rkr-map,.rkr-hud.rkr-min .rkr-scores,.rkr-hud.rkr-min .rkr-hint{display:none;}
 .rkr-menubtn{display:none;}
@@ -722,27 +722,34 @@ function createUI(root) {
   menuBtn.title = 'Menu';
   menuBtn.setAttribute('aria-label', 'Menu');
   muteEl.setAttribute('aria-label', 'Mute sound');
-  // full screen (computers): more of the level above and below your kitty (main.js tallView)
+  // full screen: computers (more of the level above and below your kitty: main.js tallView) and phone / tablet browsers
+  // (back into full screen, turned to landscape, after leaving it; the apps always are, iPhone Safari can't)
   const fullBtn = el('button', 'rkr-hudbtn rkr-fullbtn', ICONS.full);
   fullBtn.title = 'Full screen';
   fullBtn.setAttribute('aria-label', 'Full screen');
-  const canFull = !TOUCH && !!document.documentElement.requestFullscreen;
+  const docEl = document.documentElement, isFull = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
+  const canFull = !NATIVE && !!(docEl.requestFullscreen || docEl.webkitRequestFullscreen);
   function toggleFull() {
     if (!canFull) return;
-    const p = document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
-    if (p && p.catch) p.catch(() => {});
+    if (isFull()) {
+      const p = (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      if (p && p.catch) p.catch(() => {});
+    } else if (TOUCH) goFullscreenLandscape();
+    else { const p = docEl.requestFullscreen(); if (p && p.catch) p.catch(() => {}); }
   }
   // Esc pauses the game: keep it from also leaving full screen, where the browser can (Chrome, Edge: hold Esc to leave)
   const kb = navigator.keyboard;
   const paintFull = () => {
-    const on = !!document.fullscreenElement;
+    const on = isFull();
     fullBtn.classList.toggle('rkr-on', on); fullBtn.setAttribute('aria-pressed', String(on));
     try { if (kb && kb.lock) { if (on) kb.lock(['Escape']).catch(() => {}); else kb.unlock(); } } catch { /* not here */ }
   };
   document.addEventListener('fullscreenchange', paintFull);
+  document.addEventListener('webkitfullscreenchange', paintFull);
   paintFull();
   fullBtn.addEventListener('click', toggleFull);
-  if (!canFull) { fullBtn.style.display = 'none'; for (const n of hintEl.querySelectorAll('.rkr-fullkey')) n.style.display = 'none'; }
+  if (!canFull) fullBtn.style.display = 'none';
+  if (!canFull || TOUCH) for (const n of hintEl.querySelectorAll('.rkr-fullkey')) n.style.display = 'none';   // (the F key hint: keyboards only)
   for (const b of [muteEl, hudBtn, fullBtn, menuBtn]) {
     b.type = 'button';
     // mouse/touch clicks must not leave focus here, or the next Enter/Space would press it again

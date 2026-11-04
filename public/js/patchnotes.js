@@ -2,6 +2,12 @@
 // When you ship something players will notice, add a line to the top entry (or start a new one).
 const PATCH_NOTES = [
   {
+    version: '1.3.1', date: '2026-11-04', title: 'Full screen on phones',
+    items: [
+      'Phones and tablets now have the full screen button too (top right, next to the sound button): if you leave full screen, tap it to go straight back in, turned sideways. Not on iPhones, whose browsers do not allow full screen',
+    ],
+  },
+  {
     version: '1.3', date: '2026-11-01', title: 'Seasons',
     items: [
       'The climbable trees have moved to spring: big leafy trees with blossoms. Climb up and the wolves cannot reach you, and every tree still has a pair of boots on top',
