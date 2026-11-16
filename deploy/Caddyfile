@@ -6,12 +6,3 @@ runkittyrun.fun {
 www.runkittyrun.fun {
 	redir https://runkittyrun.fun{uri} permanent
 }
-
-# Old free hostnames (nip.io / sslip.io): pages redirect to runkittyrun.fun, but the game server itself
-# (/ws, /api, /healthz) and Android App Links verification (/.well-known) keep working there for app builds.
-runkittyrun.80-47-225-25.nip.io, runkittyrun.80-47-225-25.sslip.io, 80-47-225-25.nip.io, 80-47-225-25.sslip.io {
-	encode zstd gzip
-	@page not path /ws /ws/* /api/* /healthz /.well-known/*
-	redir @page https://runkittyrun.fun{uri} permanent
-	reverse_proxy 127.0.0.1:8080
-}

@@ -21,7 +21,7 @@ Environment=REPORTS_FILE=/var/lib/run-kitty-run/reports.jsonl
 ExecStart=/usr/bin/node server/index.js
 Restart=always
 RestartSec=2
-# sandboxing: the game can't see other users' files (the box also runs the DSH lab)
+# sandboxing: the game cannot see other users' files
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

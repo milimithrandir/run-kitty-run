@@ -2,9 +2,9 @@
 
 3D square-spiral kitty runner (three.js): one long corridor of straight legs winding in to the goal room, with solo, local co-op and **online lobbies (up to 32 players)**.
 
-Live: https://runkittyrun.fun (domain on Cloudflare, DNS only → the UpCloud box; Caddy gets the cert). Hosting moved to the maximilianlight UpCloud account on 15 October 2026 (Apps server `80.47.237.0`). The public domain stays the same.
+Live: https://runkittyrun.fun (domain on Cloudflare, DNS only → the dedicated UpCloud Starter server; Caddy gets the cert). The game runs on `80.47.237.83` in the maximilianlight account (1 vCPU, 1 GB RAM, 10 GB disk).
 
-The old free names (https://runkittyrun.80-47-225-25.nip.io, https://80-47-225-25.nip.io and the .sslip.io mirrors) redirect pages there but still serve /ws and /api for app builds.
+The public domain is the stable endpoint for web and mobile clients.
 
 ## Run locally
 
@@ -53,7 +53,7 @@ scripts/feedback.sh          # newest last; add -n 20 for only the last 20
 - `public/` – the browser client (static files). `public/js/shared/` is the pure, deterministic game sim, used by both client and server.
 - `server/index.js` – Node server: serves `public/` and runs lobbies over WebSockets at `/ws`.
 - `deploy/` – systemd unit, Caddyfile (HTTPS), one-time `setup.sh`, `deploy.sh`, and the `rkr-autodeploy` timer that runs it when `main` moves.
-- `scripts/deploy.sh` – push `main` and deploy to the UpCloud box right away (the box also polls GitHub every 5 minutes).
+- `scripts/deploy.sh` – push `main`; the server polls GitHub and deploys within about 5 minutes.
 
 ## Online netcode, briefly
 
