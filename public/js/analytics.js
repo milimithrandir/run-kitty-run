@@ -101,7 +101,11 @@ function drawChart(canvas, days) {
   days = days.filter((d) => d.day < today);
   if (!days.length) { g.fillStyle = 'rgba(255,255,255,.6)'; g.fillText('No data yet', W / 2 - 30, H / 2); return; }
   let cum = 0;
-  const pts = days.map((d) => ({ day: d.day, cum: (cum += d.newPlayers), hours: (d.seconds || 0) / 3600 }));
+  const pts = days.map((d) => {
+    // A dated snapshot supplies a cumulative total without inventing daily visits for the missing interval.
+    cum = d.snapshot ? Math.max(cum, d.baselinePlayers || 0) : cum + (d.newPlayers || 0);
+    return { day: d.day, cum, hours: (d.seconds || 0) / 3600, snapshot: !!d.snapshot };
+  });
   const maxCum = Math.max(1, ...pts.map((p) => p.cum)), maxHrs = Math.max(0.5, ...pts.map((p) => p.hours));
   const n = pts.length, step = w / Math.max(1, n);
   // grid + left axis (cumulative)
@@ -119,11 +123,21 @@ function drawChart(canvas, days) {
   // cumulative line
   g.strokeStyle = '#ffcf5a'; g.lineWidth = 3; g.lineJoin = 'round';
   g.beginPath();
-  pts.forEach((p, i) => { const x = padL + i * step + step / 2, y = padT + h - (p.cum / maxCum) * h; i ? g.lineTo(x, y) : g.moveTo(x, y); });
+  pts.forEach((p, i) => {
+    const x = padL + i * step + step / 2, y = padT + h - (p.cum / maxCum) * h;
+    if (p.snapshot) { g.stroke(); g.beginPath(); g.moveTo(x, y); }
+    else if (i) g.lineTo(x, y);
+    else g.moveTo(x, y);
+  });
   g.stroke();
-  // x labels: first, middle, last day
+  // Mark the snapshot as the start of a new segment; the intervening daily records are unavailable.
+  for (let i = 0; i < pts.length; i++) if (pts[i].snapshot) {
+    const x = padL + i * step + step / 2, y = padT + h - (pts[i].cum / maxCum) * h;
+    g.fillStyle = '#ffcf5a'; g.beginPath(); g.arc(x, y, 4, 0, Math.PI * 2); g.fill();
+  }
+  // x labels: first, middle, last day, and any snapshot
   g.fillStyle = 'rgba(255,255,255,.55)';
-  for (const i of [...new Set([0, Math.floor((n - 1) / 2), n - 1])]) {
+  for (const i of [...new Set([0, Math.floor((n - 1) / 2), n - 1, ...pts.map((p, j) => p.snapshot ? j : -1).filter((j) => j >= 0)])]) {
     const x = padL + i * step + step / 2;
     g.fillText(pts[i].day.slice(5), Math.min(W - 40, Math.max(padL - 10, x - 16)), H - 8);
   }
@@ -162,8 +176,9 @@ function openStatsPage(root) {
   fetch(apiUrl('/api/stats'), { cache: 'no-store' }).then((r) => r.json()).then((d) => {
     body.textContent = '';
     const T = d.totals;
+    const snapshot = (d.days || []).find((row) => row.snapshot);
     const tiles = [
-      [fmt(d.players), 'players ever'], [fmt(d.playersToday), 'played today'], [fmt(d.onlineNow), 'online now'],
+      [fmt(d.players), snapshot ? 'players ever (est.)' : 'players ever'], [fmt(d.playersToday), 'played today'], [fmt(d.onlineNow), 'online now'],
       [fmt(T.runs), 'runs played'], [fmt(T.levels), 'levels cleared'], [fmtTime(T.seconds), 'time played'],
       [fmt(T.rescues), 'kitties rescued'], [fmt(T.deaths), 'times caught'], [fmt(Math.floor((T.seconds || 0) / SONG_SECONDS)), 'songs played'],
       [fmt(T.lobbies), 'lobbies created'], [fmt(T.onlineGames), 'online games'], [fmt(d.peakOnline.count), 'most online at once'],
@@ -251,7 +266,7 @@ function openStatsPage(root) {
       ...hellPart,
       ...chainPart,
       ...pills('Devices', d.devices, { desktop: 'Computer', touch: 'Phone / tablet', ios: 'iOS app', android: 'Android app' }),
-      el('div', 'rks-note', `Counting since ${d.since}. Anonymous: each browser gets a random id, nothing else is stored.`),
+      el('div', 'rks-note', `Counting since ${d.since}. ${snapshot ? 'Older totals were restored from a 2 Nov 2026 snapshot. Daily history for 16 Oct–15 Nov is incomplete, so totals are estimates. ' : ''}Anonymous: each browser gets a random id, nothing else is stored.`),
     );
     drawChart(cv, d.days || []);
   }).catch(() => { body.textContent = ''; body.appendChild(el('div', 'rks-err', "Couldn't load the stats right now.")); });
