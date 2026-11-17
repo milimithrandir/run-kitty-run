@@ -80,20 +80,14 @@ function el(tag, cls, text) {
   return e;
 }
 const fmt = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e4 ? (n / 1e3).toFixed(1) + 'k' : String(n | 0));
-function fmtTime(sec) {
-  const h = sec / 3600;
-  if (h >= 1) return (h >= 100 ? Math.round(h) : h.toFixed(1)) + ' h';
-  return Math.round(sec / 60) + ' min';
-}
-
-// Cumulative players (line, left axis) over the time played each day (bars, right axis: hours of kitty time).
+// Cumulative players across the recorded dates and the restored snapshot.
 function drawChart(canvas, days) {
   const dpr = window.devicePixelRatio || 1;
   const W = canvas.clientWidth, H = canvas.clientHeight;
   canvas.width = W * dpr; canvas.height = H * dpr;
   const g = canvas.getContext('2d');
   g.scale(dpr, dpr);
-  const padL = 44, padR = 46, padT = 16, padB = 26, BAR_H = 0.55;   // (the bars fill the lower part)
+  const padL = 44, padR = 18, padT = 16, padB = 26;
   const w = W - padL - padR, h = H - padT - padB;
   g.font = '700 11px system-ui, sans-serif';
   // only days that are over: today's is still being counted (the server's days are UTC)
@@ -104,10 +98,16 @@ function drawChart(canvas, days) {
   const pts = days.map((d) => {
     // A dated snapshot supplies a cumulative total without inventing daily visits for the missing interval.
     cum = d.snapshot ? Math.max(cum, d.baselinePlayers || 0) : cum + (d.newPlayers || 0);
-    return { day: d.day, cum, hours: (d.seconds || 0) / 3600, snapshot: !!d.snapshot };
+    return { day: d.day, cum, snapshot: !!d.snapshot };
   });
-  const maxCum = Math.max(1, ...pts.map((p) => p.cum)), maxHrs = Math.max(0.5, ...pts.map((p) => p.hours));
-  const n = pts.length, step = w / Math.max(1, n);
+  const maxCum = Math.max(1, ...pts.map((p) => p.cum));
+  const n = pts.length;
+  const firstDate = Date.parse(`${pts[0].day}T00:00:00Z`);
+  const dateSpan = Math.max(1, Date.parse(`${pts[n - 1].day}T00:00:00Z`) - firstDate);
+  const coords = pts.map((p) => ({
+    x: padL + (Date.parse(`${p.day}T00:00:00Z`) - firstDate) / dateSpan * w,
+    y: padT + h - p.cum / maxCum * h,
+  }));
   // grid + left axis (cumulative)
   g.strokeStyle = 'rgba(255,255,255,.08)'; g.fillStyle = 'rgba(255,255,255,.5)'; g.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
@@ -115,37 +115,29 @@ function drawChart(canvas, days) {
     g.beginPath(); g.moveTo(padL, y); g.lineTo(padL + w, y); g.stroke();
     g.fillText(fmt(Math.round((maxCum * i) / 4)), 6, y + 4);
   }
-  // time played that day: bars, with their own scale on the right
-  g.fillStyle = 'rgba(110,198,255,.45)';
-  pts.forEach((p, i) => { const bh = (p.hours / maxHrs) * h * BAR_H; g.fillRect(padL + i * step + step * 0.18, padT + h - bh, Math.max(1, step * 0.64), bh); });
-  g.fillStyle = 'rgba(110,198,255,.8)';
-  for (const f of [0.5, 1]) { const v = maxHrs * f; g.fillText((v >= 10 ? Math.round(v) : v.toFixed(1)) + ' h', padL + w + 6, padT + h - h * BAR_H * f + 4); }
-  // cumulative line
+  // Smooth the line through known points. The longer gap stays proportional to its dates.
   g.strokeStyle = '#ffcf5a'; g.lineWidth = 3; g.lineJoin = 'round';
   g.beginPath();
-  pts.forEach((p, i) => {
-    const x = padL + i * step + step / 2, y = padT + h - (p.cum / maxCum) * h;
-    if (p.snapshot) { g.stroke(); g.beginPath(); g.moveTo(x, y); }
-    else if (i) g.lineTo(x, y);
-    else g.moveTo(x, y);
-  });
-  g.stroke();
-  // Mark the snapshot as the start of a new segment; the intervening daily records are unavailable.
-  for (let i = 0; i < pts.length; i++) if (pts[i].snapshot) {
-    const x = padL + i * step + step / 2, y = padT + h - (pts[i].cum / maxCum) * h;
-    g.fillStyle = '#ffcf5a'; g.beginPath(); g.arc(x, y, 4, 0, Math.PI * 2); g.fill();
+  g.moveTo(coords[0].x, coords[0].y);
+  for (let i = 0; i < n - 1; i++) {
+    const a = coords[i], b = coords[i + 1], dx = b.x - a.x;
+    const incoming = i ? (b.y - coords[i - 1].y) / (b.x - coords[i - 1].x) : (b.y - a.y) / dx;
+    const outgoing = i + 2 < n ? (coords[i + 2].y - a.y) / (coords[i + 2].x - a.x) : (b.y - a.y) / dx;
+    const lo = Math.min(a.y, b.y), hi = Math.max(a.y, b.y);
+    const c1y = Math.max(lo, Math.min(hi, a.y + incoming * dx / 3));
+    const c2y = Math.max(lo, Math.min(hi, b.y - outgoing * dx / 3));
+    g.bezierCurveTo(a.x + dx / 3, c1y, b.x - dx / 3, c2y, b.x, b.y);
   }
-  // x labels: first, middle, last day, and any snapshot
+  g.stroke();
+  // Label the endpoints and the dated snapshot.
   g.fillStyle = 'rgba(255,255,255,.55)';
-  for (const i of [...new Set([0, Math.floor((n - 1) / 2), n - 1, ...pts.map((p, j) => p.snapshot ? j : -1).filter((j) => j >= 0)])]) {
-    const x = padL + i * step + step / 2;
+  for (const i of [...new Set([0, n - 1, ...pts.map((p, j) => p.snapshot ? j : -1).filter((j) => j >= 0)])]) {
+    const x = coords[i].x;
     g.fillText(pts[i].day.slice(5), Math.min(W - 40, Math.max(padL - 10, x - 16)), H - 8);
   }
   // legend
   g.fillStyle = '#ffcf5a'; g.fillRect(padL + 6, padT - 10, 14, 4);
   g.fillStyle = 'rgba(255,255,255,.7)'; g.fillText('total players', padL + 24, padT - 5);
-  g.fillStyle = 'rgba(110,198,255,.7)'; g.fillRect(padL + 120, padT - 12, 10, 8);
-  g.fillStyle = 'rgba(255,255,255,.7)'; g.fillText('time played that day', padL + 136, padT - 5);
 }
 
 // the soundtrack's average song length (music/catjam2-3.mp3: 3:05 and 3:23): songs played = time played / this
@@ -178,8 +170,8 @@ function openStatsPage(root) {
     const T = d.totals;
     const snapshot = (d.days || []).find((row) => row.snapshot);
     const tiles = [
-      [fmt(d.players), snapshot ? 'players ever (est.)' : 'players ever'], [fmt(d.playersToday), 'played today'], [fmt(d.onlineNow), 'online now'],
-      [fmt(T.runs), 'runs played'], [fmt(T.levels), 'levels cleared'], [fmtTime(T.seconds), 'time played'],
+      [fmt(d.players), 'players ever'], [fmt(d.playersToday), 'played today'], [fmt(d.onlineNow), 'online now'],
+      [fmt(T.runs), 'runs played'], [fmt(T.levels), 'levels cleared'],
       [fmt(T.rescues), 'kitties rescued'], [fmt(T.deaths), 'times caught'], [fmt(Math.floor((T.seconds || 0) / SONG_SECONDS)), 'songs played'],
       [fmt(T.lobbies), 'lobbies created'], [fmt(T.onlineGames), 'online games'], [fmt(d.peakOnline.count), 'most online at once'],
     ];
@@ -261,12 +253,12 @@ function openStatsPage(root) {
     }
     body.append(
       grid,
-      el('div', 'rks-h', 'Players and time played'), cv,
+      el('div', 'rks-h', 'Players over time'), cv,
       el('div', 'rks-h', 'Modes played (runs)'), bars,
       ...hellPart,
       ...chainPart,
       ...pills('Devices', d.devices, { desktop: 'Computer', touch: 'Phone / tablet', ios: 'iOS app', android: 'Android app' }),
-      el('div', 'rks-note', `Counting since ${d.since}. ${snapshot ? 'Older totals were restored from a 2 Nov 2026 snapshot. Daily history for 16 Oct–15 Nov is incomplete, so totals are estimates. ' : ''}Anonymous: each browser gets a random id, nothing else is stored.`),
+      el('div', 'rks-note', `Counting since ${d.since}. ${snapshot ? 'Older totals were restored from a 2 Nov 2026 snapshot; daily history in between is incomplete. ' : ''}Anonymous: each browser gets a random id, nothing else is stored.`),
     );
     drawChart(cv, d.days || []);
   }).catch(() => { body.textContent = ''; body.appendChild(el('div', 'rks-err', "Couldn't load the stats right now.")); });
